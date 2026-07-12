@@ -1,0 +1,52 @@
+# Pretraining run A — full corpus, seed 0.
+# The two pretrain configs (A/B) are IDENTICAL except `seed` and `out_dir`:
+# pretraining at this scale is fickle, so we run it twice and keep whichever
+# encoder probes better on HTE (scripts/select_and_sweep.py). Both use the full
+# PubChem budget ("100").
+#
+# To turn one into an algorithm variant instead of a pure seed rerun, change ONE
+# knob here (and note it): model.truncated_bptt_k (how many iterations backprop
+# flows through — "how strong the backprop is") or model.activation
+# (gelu | relu | silu).
+name: pretrain_a
+
+model:
+  d_model: 384
+  n_heads: 6            # head dim 64
+  d_ff: 1536
+  prelude_layers: 2
+  core_layers: 4
+  recurrent: true
+  train_r: 4
+  randomize_r: true
+  r_min: 1
+  r_max: 8
+  truncated_bptt_k: 4    # "how strong the backprop is" — vary on ONE run to compare
+  activation: gelu       # gelu | relu | silu — the other easy variant knob
+  pool: cls
+  num_bins: 20
+  max_position: 256
+
+# Real-run data. For the offline smoke test pass --synthetic (no downloads).
+synthetic: false
+pubchem_path: data/processed/pubchem.smi         # cleaned, from prepare_corpus.py
+pubchem_limit: 10000000                          # full budget ("100")
+stage2_reactions_path: data/processed/reactions  # pretokenized mmap, from prepare_corpus.py
+tokenizer_path: data/processed/tokenizer.json    # shared vocab (covers HTE molecules)
+
+stage1_enabled: true
+stage2_enabled: true
+stage1_epochs: 10
+stage2_epochs: 5
+mlm_prob: 0.15
+span_mask_stage2: true
+
+seed: 0
+batch_size: 256
+lr: 3.0e-4
+max_length: 256
+device: cuda
+amp: true            # bf16 autocast
+compile: true        # torch.compile
+num_workers: 8
+out_dir: runs/pretrain_a

@@ -1,8 +1,8 @@
-# Pretraining run B — 10M PubChem molecules.
-# Identical to pretrain_5m.yaml except pubchem_limit (and out_dir). "Is 2x the
-# Stage-1 corpus worth the extra pretraining compute?" is decided by comparing
-# this encoder's linear-probe R² against pretrain_5m's.
-name: pretrain_10m
+# Pretraining run B — full corpus, seed 1.
+# Identical to pretrain_a.yaml except `seed` and `out_dir` (fickleness rerun).
+# If you'd rather make B an algorithm variant, change ONE model knob here
+# (truncated_bptt_k or activation) and leave the rest matched to A.
+name: pretrain_b
 
 model:
   d_model: 384
@@ -16,6 +16,7 @@ model:
   r_min: 1
   r_max: 8
   truncated_bptt_k: 4
+  activation: gelu
   pool: cls
   num_bins: 20
   max_position: 256
@@ -33,7 +34,7 @@ stage2_epochs: 5
 mlm_prob: 0.15
 span_mask_stage2: true
 
-seed: 0
+seed: 1
 batch_size: 256
 lr: 3.0e-4
 max_length: 256
@@ -41,4 +42,4 @@ device: cuda
 amp: true
 compile: true
 num_workers: 8
-out_dir: runs/pretrain_10m
+out_dir: runs/pretrain_b

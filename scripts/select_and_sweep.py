@@ -11,11 +11,11 @@ each encoder, train only a fresh head, compare. The winner is forked into the
 four SFT/RL configs (each loading it as the transfer encoder).
 
     python scripts/select_and_sweep.py \
-        --encoders runs/pretrain_5m runs/pretrain_10m
+        --encoders runs/pretrain_a runs/pretrain_b
 
     # offline smoke: build two toy encoders first, then run this on CPU
-    python scripts/select_and_sweep.py --encoders runs/pt_a runs/pt_b \
-        --device cpu --epochs 2 --probe-epochs 1
+    python scripts/select_and_sweep.py --encoders runs/pretrain_a runs/pretrain_b \
+        --device cpu --epochs 2 --probe-epochs 1 --batch-size 32
 """
 
 from __future__ import annotations

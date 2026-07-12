@@ -9,13 +9,13 @@ dist/
 venv/
 env/
 
-# Data / corpora (large; keep out of git — see README)
+# Large corpora / generated data (keep out of git — fetch via scripts/fetch_data.py)
 data/raw/
 data/processed/
 data/cache/
-*.xlsx
 *.csv.gz
 *.smi
+# NOTE: data/hte/ (small, essential HTE xlsx) IS tracked — see data/README.md
 
 # Training artifacts
 runs/

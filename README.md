@@ -72,85 +72,94 @@ full test-time-compute sweep (R² / MAE / Spearman at r ∈ {1,2,4,8,16}).
 
 ## Full pipeline: pretrain 2 encoders → pick the best → fork the 4 runs
 
-The plan is to pretrain **two** candidate encoders (5M vs 10M PubChem
-molecules), pick the better one by HTE linear-probe R² (the design's
-"probe-only column"), then fork that winner into the four SFT/RL runs.
+The plan is to pretrain **two identical** candidate encoders (same config,
+different seed — pretraining is fickle at this scale), keep whichever probes
+better on HTE (the design's "probe-only column"), then fork that winner into
+the four SFT/RL runs.
 
 ```bash
+# 0. gather data (BH is vendored; PubChem/USPTO fetch on the GPU box — see Data)
+python scripts/fetch_data.py --pubchem --limit 10000000 --uspto --ord
+
 # 1. once: build the shared tokenizer + cleaned/pre-tokenized corpus
 python scripts/prepare_corpus.py \
     --pubchem data/raw/pubchem.smi --limit 10000000 \
     --reactions data/raw/reactions.jsonl \
-    --hte data/raw/Dreher_and_Doyle_input_data.xlsx --sheet FullCV_01 \
+    --hte data/hte/Buchwald-Hartwig/Dreher_and_Doyle_input_data.xlsx --sheet FullCV_01 \
     --out data/processed
 
-# 2. the two candidates (run on two GPUs in parallel to stay near ~1 hr)
-python scripts/pretrain.py --config configs/pretrain_5m.yaml
-python scripts/pretrain.py --config configs/pretrain_10m.yaml
+# 2. the two identical candidates (seed 0 and seed 1)
+python scripts/pretrain.py --config configs/pretrain_a.yaml
+python scripts/pretrain.py --config configs/pretrain_b.yaml
 
 # 3. probe both, fork the winner into the four SFT/RL runs
-python scripts/select_and_sweep.py --encoders runs/pretrain_5m runs/pretrain_10m
+python scripts/select_and_sweep.py --encoders runs/pretrain_a runs/pretrain_b
 ```
 
 Offline smoke (no downloads, CPU) — same flow at toy scale:
 
 ```bash
 python scripts/prepare_corpus.py --synthetic --out data/processed
-python scripts/pretrain.py --config configs/pretrain_5m.yaml  --synthetic --device cpu \
+python scripts/pretrain.py --config configs/pretrain_a.yaml --synthetic --device cpu \
     --stage1-epochs 1 --stage2-epochs 1 --num-workers 0 --batch-size 32
-python scripts/pretrain.py --config configs/pretrain_10m.yaml --synthetic --device cpu \
+python scripts/pretrain.py --config configs/pretrain_b.yaml --synthetic --device cpu \
     --stage1-epochs 1 --stage2-epochs 1 --num-workers 0 --batch-size 32
-python scripts/select_and_sweep.py --encoders runs/pretrain_5m runs/pretrain_10m \
+python scripts/select_and_sweep.py --encoders runs/pretrain_a runs/pretrain_b \
     --device cpu --epochs 1 --probe-epochs 1 --batch-size 32
 ```
 
-The two pretrain configs differ **only** in `pubchem_limit` (5M vs 10M), so the
-probe comparison cleanly answers "is 2× the Stage-1 corpus worth the extra
-pretraining compute?" The encoder is ~11M params (the design's 10–15M
-recurrent-depth point) — grow `model.d_model`/`core_layers` in the configs to
-hit other scale-sweep points.
+The two pretrain configs are **identical except `seed`** — the probe just picks
+the healthier of two runs. To make one an algorithm variant instead, change a
+single `model` knob in `pretrain_b.yaml` (`truncated_bptt_k` = backprop
+strength, or `activation`) and leave the rest matched. The encoder is ~11M
+params (the design's 10–15M recurrent-depth point); grow `model.d_model` /
+`core_layers` for other scale points — the SFT forks inherit the dims from the
+checkpoint automatically.
 
 ## Target hardware (CUDA)
 
-The model is ~11–30M params, so it fits on anything; the question is only price
-and throughput. For the full plan (two pretrainings + the fork), the honest
-recommendation given a ~1-hour wall-clock target:
+The model is ~11–30M params, so it fits on anything. Plan of record: **a single
+H100 (80 GB), both pretrainings run serially.** Wall-clock isn't a constraint
+here, so there's no need to parallelize across cards — the two pretrainings plus
+the four SFT/RL forks finish comfortably in a couple of hours, and the SFT+GRPO
+forks are minutes and pennies on top.
 
-- **Two H100s, one per pretraining run, in parallel.** Each 10M-molecule
-  pretraining (1–2B effective tokens, 8–12 epochs) is roughly a couple of
-  GPU-hours on an A100 and faster on an H100; running the 5M and 10M candidates
-  side by side keeps wall-clock at ~1 hr instead of ~2 hr serial. The SFT+GRPO
-  forks that follow are minutes and pennies — they don't need their own card.
 - **H100, not H200.** The H200 is the *same Hopper compute* as the H100 (same
-  ~990 dense BF16 TFLOP/s) with more memory (141 GB vs 80 GB) and bandwidth. At
-  ~11M params on short SMILES you use a fraction of 80 GB and aren't
-  memory-bound, so H200 buys **zero** wall-clock over H100 for more money.
-- **One H100 is fine if you serialize** — expect ~2 hr for both pretrainings.
-  A single A100 80 GB works too (the design's comfortable default) at lower cost
-  and modestly slower.
+  ~990 dense BF16 TFLOP/s) with more memory (141 GB vs 80 GB). At ~11M params on
+  short SMILES you use a fraction of 80 GB and aren't memory-bound, so H200 buys
+  nothing over H100 for more money.
+- One card is plenty: ~11M params leaves the 80 GB almost empty, so push
+  `batch_size` up and both pretrainings still fit back-to-back.
 
-Reality check on hitting 1 hr: at this scale the GPU is *not* the bottleneck —
-the input pipeline is. A tiny model starves on a naive dataloader, so the perf
-knobs matter more than the card: bf16 (`amp: true`), `torch.compile`
-(`compile: true`), a large `batch_size`, `num_workers`, and the pre-tokenized
-mmap corpus that `prepare_corpus.py` writes (zero Python tokenization at step
-time). All are already wired in the pretrain configs. Prefer per-second billing
-and a persistent volume for the corpus. `--device cpu` is the local debug path.
+At this scale the GPU is rarely the bottleneck — the input pipeline is. A tiny
+model starves on a naive dataloader, so keep the perf knobs on: bf16
+(`amp: true`), `torch.compile` (`compile: true`), a large `batch_size`,
+`num_workers`, and the pre-tokenized mmap corpus that `prepare_corpus.py` writes
+(zero Python tokenization at step time). All are already wired in the pretrain
+configs. Use a persistent volume for the corpus. `--device cpu` is the local
+debug path.
 
 ## Data
 
-Synthetic by default. For real Buchwald–Hartwig data:
+The **Buchwald–Hartwig HTE dataset is vendored** in
+`data/hte/Buchwald-Hartwig/` (~2 MB, 3,955 reactions, 16 sheets: `FullCV_01..10`
+random folds + `Test1..4` additive-holdout OOD). To train on it instead of the
+synthetic toy data, set `data.synthetic: false` in a run config — the default
+`data.bh_xlsx` already points at the vendored file — and `pip install -e
+".[chem]"` for the pandas/openpyxl reader.
 
-1. Get `data/Buchwald-Hartwig/Dreher_and_Doyle_input_data.xlsx` from
-   [rxn4chemistry/rxn_yields](https://github.com/rxn4chemistry/rxn_yields).
-2. In a run config set `data.synthetic: false` and
-   `data.bh_xlsx: <path>`; pick `data.sheet` (`FullCV_01..10` for the canonical
-   random folds, `Test1..4` for additive-holdout OOD).
-3. `pip install -e ".[chem]"` for the pandas/openpyxl reader (and RDKit if you
-   enable `data.randomize_smiles_prob`).
+Everything else is fetched with one script:
 
-Column mapping lives in `data/dataset.py` (`_BH_COLUMNS`); adjust if your
-release names columns differently.
+```bash
+python scripts/fetch_data.py --all          # BH (already vendored) + PubChem + USPTO + ORD
+python scripts/fetch_data.py --pubchem --limit 10000000 --uspto   # the big corpora only
+```
+
+**Network caveat:** from a Claude session, PubChem (NCBI) and USPTO (figshare)
+are blocked by the proxy — only GitHub-hosted data (BH, ORD) downloads here. Run
+the PubChem/USPTO fetch on the H100 box (open network). Full source table,
+licenses, and sizes are in [`data/README.md`](data/README.md). Column mapping
+for the BH reader is `_BH_COLUMNS` in `data/dataset.py`.
 
 ## Layout
 
@@ -164,9 +173,10 @@ src/coffee_transformer/
                pretrain_pipeline (Stages 1–2), checkpoint (encoder transfer), probe (selection)
   eval/        R²/MAE/Spearman, test-time-compute sweep
   utils/       config (YAML→dataclasses), seed, device
-configs/       base.yaml (annotated) + four run files + pretrain_5m/10m
-scripts/       prepare_corpus.py, pretrain.py, select_and_sweep.py,
+configs/       base.yaml (annotated) + four run files + pretrain_a/pretrain_b
+scripts/       fetch_data.py, prepare_corpus.py, pretrain.py, select_and_sweep.py,
                run_sft.py, run_grpo.py, sweep_sft_ratio.py
+data/          hte/ (vendored BH) + README (sources/licenses)
 tests/         tokenizer, model, losses, pipeline, pretrain
 docs/          PIPELINE.md — maps every design section to the code
 ```
