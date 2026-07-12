@@ -68,6 +68,25 @@ def test_anchor_param_count_small():
     assert count_parameters(model) < 15_000_000
 
 
+def test_swiglu_forward_and_param_match():
+    # gated FFN should run and stay parameter-matched to the pointwise FFN
+    gelu = YieldModel(_cfg(activation="gelu", d_ff=192))
+    swiglu = YieldModel(_cfg(activation="swiglu", d_ff=192))
+    ii, si, am = _batch(cfg=_cfg())
+    out = swiglu.eval()(ii, si, attention_mask=am, r=2)
+    assert out.logits.shape == (4, 20)
+    # 2/3 * 192 == 128 -> 3*d*128 == 2*d*192: FFN projection params match exactly;
+    # only the handful of bias terms differ, so totals are within a fraction of 1%.
+    pg, ps = count_parameters(gelu), count_parameters(swiglu)
+    assert abs(pg - ps) / pg < 0.01
+
+
+def test_unknown_activation_raises():
+    import pytest
+    with pytest.raises(ValueError):
+        YieldModel(_cfg(activation="banana"))
+
+
 def test_backward_flows_to_encoder():
     cfg = _cfg()
     model = YieldModel(cfg).train()

@@ -1,7 +1,9 @@
-# Pretraining run B — full corpus, seed 1.
-# Identical to pretrain_a.yaml except `seed` and `out_dir` (fickleness rerun).
-# If you'd rather make B an algorithm variant, change ONE model knob here
-# (truncated_bptt_k or activation) and leave the rest matched to A.
+# Pretraining run B — variant: gated SwiGLU FFN, full corpus, seed 0 (matched to A).
+# Only `activation` differs from pretrain_a.yaml. SwiGLU is the modern default
+# FFN (Llama/PaLM) and is param-matched here: the gated hidden width auto-scales
+# to 2/3 * d_ff (1024) so 3*d*1024 == 2*d*1536 == A's FFN params. A smooth gated
+# nonlinearity is also the safer choice for the weight-tied core that re-applies
+# the same block up to r times.
 name: pretrain_b
 
 model:
@@ -16,7 +18,7 @@ model:
   r_min: 1
   r_max: 8
   truncated_bptt_k: 4
-  activation: gelu
+  activation: swiglu     # <-- the only difference from A (gelu)
   pool: cls
   num_bins: 20
   max_position: 256
@@ -34,7 +36,7 @@ stage2_epochs: 5
 mlm_prob: 0.15
 span_mask_stage2: true
 
-seed: 1
+seed: 0                  # matched to A so the probe delta isolates the FFN
 batch_size: 256
 lr: 3.0e-4
 max_length: 256

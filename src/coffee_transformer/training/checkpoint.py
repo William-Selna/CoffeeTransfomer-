@@ -25,7 +25,14 @@ def save_pretrained_encoder(
     mlm_model: MLMModel,
     tokenizer: SmilesTokenizer,
     val_loss: float | None = None,
+    filename: str = "encoder.pt",
+    step: int | None = None,
 ) -> Path:
+    """Save an encoder checkpoint (+ ModelConfig) and the shared tokenizer.
+
+    `filename` lets callers keep a rolling `encoder_latest.pt` alongside the
+    canonical `encoder.pt` (best-by-val) for crash recovery.
+    """
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     # unwrap a possible torch.compile wrapper
@@ -34,10 +41,11 @@ def save_pretrained_encoder(
         "model_config": dataclasses.asdict(model_cfg),
         "encoder_state": encoder.state_dict(),
         "val_loss": val_loss,
+        "step": step,
     }
-    torch.save(ckpt, out_dir / "encoder.pt")
+    torch.save(ckpt, out_dir / filename)
     tokenizer.save(out_dir / "tokenizer.json")
-    return out_dir / "encoder.pt"
+    return out_dir / filename
 
 
 def load_encoder_into_yield_model(

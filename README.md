@@ -72,10 +72,13 @@ full test-time-compute sweep (R² / MAE / Spearman at r ∈ {1,2,4,8,16}).
 
 ## Full pipeline: pretrain 2 encoders → pick the best → fork the 4 runs
 
-The plan is to pretrain **two identical** candidate encoders (same config,
-different seed — pretraining is fickle at this scale), keep whichever probes
-better on HTE (the design's "probe-only column"), then fork that winner into
-the four SFT/RL runs.
+The plan is to pretrain **two** candidate encoders, keep whichever probes better
+on HTE (the design's "probe-only column"), then fork that winner into the four
+SFT/RL runs. The two configs are a matched-seed **architecture comparison**:
+`pretrain_a` = pointwise GELU FFN, `pretrain_b` = gated **SwiGLU** FFN (the
+modern default, param-matched via a 2/3·d_ff hidden width). Swap `pretrain_b` to
+a plain seed rerun, or vary `truncated_bptt_k` instead, if you'd rather test
+fickleness or backprop depth.
 
 ```bash
 # 0. gather data (BH is vendored; PubChem/USPTO fetch on the GPU box — see Data)
@@ -108,13 +111,21 @@ python scripts/select_and_sweep.py --encoders runs/pretrain_a runs/pretrain_b \
     --device cpu --epochs 1 --probe-epochs 1 --batch-size 32
 ```
 
-The two pretrain configs are **identical except `seed`** — the probe just picks
-the healthier of two runs. To make one an algorithm variant instead, change a
-single `model` knob in `pretrain_b.yaml` (`truncated_bptt_k` = backprop
-strength, or `activation`) and leave the rest matched. The encoder is ~11M
-params (the design's 10–15M recurrent-depth point); grow `model.d_model` /
-`core_layers` for other scale points — the SFT forks inherit the dims from the
-checkpoint automatically.
+The encoder is ~11M params (the design's 10–15M recurrent-depth point); grow
+`model.d_model` / `core_layers` for other scale points — the SFT forks inherit
+the dims from the checkpoint automatically.
+
+**How pretraining is judged.** Two levels: the **held-out MLM validation loss**
+(intrinsic convergence/health, logged per stage) and the **HTE linear-probe R²**
+(extrinsic — freeze the encoder, train only a head, measure yield R²). You
+*select* on the probe R² (averaged over a couple of seeds, so the pick isn't
+probe-init noise), because a low MLM loss doesn't guarantee good transfer.
+
+**Robustness (it's meant to be fire-and-forget).** The pretraining trainer has
+warmup+cosine LR, a divergence guard (non-finite / exploding loss aborts with a
+message instead of burning hours), a rolling `encoder_latest.pt` for crash
+recovery, and saves the **best-by-val** encoder as the canonical `encoder.pt`.
+So `pretrain.py` → `select_and_sweep.py` is a single unattended chain.
 
 ## Target hardware (CUDA)
 

@@ -103,6 +103,12 @@ class PretrainConfig:
     mlm_prob: float = 0.15
     span_mask_stage2: bool = True
 
+    # hardening: held-out MLM val + warmup/cosine LR + divergence/checkpoint
+    val_frac: float = 0.02             # held-out slice of each stage's corpus
+    warmup_frac: float = 0.05
+    eval_every: int = 500              # steps between held-out val evals
+    ckpt_every: int = 1000             # steps between rolling encoder_latest.pt saves
+
     # optimization / perf
     seed: int = 0
     batch_size: int = 256

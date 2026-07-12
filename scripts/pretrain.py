@@ -25,6 +25,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 from coffee_transformer.models.recurrent_depth import count_parameters
 from coffee_transformer.training.checkpoint import save_pretrained_encoder
+from coffee_transformer.training.pretrain import DivergenceError
 from coffee_transformer.training.pretrain_pipeline import run_pretraining
 from coffee_transformer.utils.config import load_pretrain_config
 from coffee_transformer.utils.device import get_device
@@ -64,10 +65,17 @@ def main():
 
     generator = set_seed(cfg.seed)
     device = get_device(cfg.device)
-    print(f"== pretrain {cfg.name} | device {device} | synthetic={cfg.synthetic} ==")
+    print(f"== pretrain {cfg.name} | device {device} | synthetic={cfg.synthetic} "
+          f"| activation={cfg.model.activation} | seed={cfg.seed} ==")
 
-    model, tokenizer, val_loss = run_pretraining(cfg, device, generator)
-    print(f"params {count_parameters(model)/1e6:.2f}M | stage2 val MLM loss "
+    try:
+        model, tokenizer, val_loss = run_pretraining(cfg, device, generator)
+    except DivergenceError as e:
+        print(f"\n[DIVERGED] {e}\n"
+              f"  A rolling checkpoint may exist at {cfg.out_dir}/encoder_latest.pt.\n"
+              f"  Try lowering lr, raising warmup_frac, or reducing truncated_bptt_k / r_max.")
+        sys.exit(2)
+    print(f"params {count_parameters(model)/1e6:.2f}M | best held-out val MLM loss "
           f"{'n/a' if val_loss is None else f'{val_loss:.4f}'}")
 
     path = save_pretrained_encoder(cfg.out_dir, cfg.model, model, tokenizer, val_loss)

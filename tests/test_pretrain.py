@@ -25,7 +25,13 @@ from coffee_transformer.training.builder import (
 )
 from coffee_transformer.training.checkpoint import save_pretrained_encoder
 from coffee_transformer.training.builder import load_pretrained_bundle
-from coffee_transformer.training.pretrain import span_mask_tokens
+from coffee_transformer.training.pretrain import (
+    DivergenceError,
+    MLMTrainer,
+    MoleculeMLMDataset,
+    mlm_collate,
+    span_mask_tokens,
+)
 from coffee_transformer.training.pretrain_pipeline import run_pretraining
 from coffee_transformer.training.probe import linear_probe_score
 from coffee_transformer.utils.config import PretrainConfig, RunConfig
@@ -89,18 +95,41 @@ def _pretrain_cfg():
     return cfg
 
 
+def test_divergence_guard_raises():
+    gen = set_seed(0)
+    tok = _tok()
+    from coffee_transformer.models.config import ModelConfig
+    from coffee_transformer.models.heads import MLMModel
+    from torch.utils.data import DataLoader
+    from functools import partial
+
+    m = MLMModel(ModelConfig(vocab_size=tok.vocab_size, num_slot_types=tok.schema.num_slot_types,
+                             d_model=16, n_heads=2, d_ff=32, prelude_layers=1, core_layers=1))
+    ds = MoleculeMLMDataset(["CP(C)C", "c1ccno1"] * 8, tok, 64)
+    loader = DataLoader(ds, batch_size=4, collate_fn=partial(mlm_collate, pad_id=tok.pad_id))
+    trainer = MLMTrainer(m, tok, torch.device("cpu"), generator=gen)
+    # max_loss=0 forces every (positive) loss to trip the divergence guard
+    import pytest
+    with pytest.raises(DivergenceError):
+        trainer.train(loader, epochs=1, max_loss=0.0)
+
+
 def test_pretrain_then_transfer_and_probe(tmp_path):
     gen = set_seed(0)
     device = torch.device("cpu")
     cfg = _pretrain_cfg()
+    cfg.out_dir = str(tmp_path / "pt")
     model, tokenizer, val_loss = run_pretraining(cfg, device, gen)
     assert val_loss is not None and val_loss > 0
+    # hardening: a rolling checkpoint was written during training
+    assert (tmp_path / "pt" / "encoder_latest.pt").exists()
 
-    save_pretrained_encoder(tmp_path, cfg.model, model, tokenizer, val_loss)
-    assert (tmp_path / "encoder.pt").exists()
-    assert (tmp_path / "tokenizer.json").exists()
+    bundle = tmp_path / "bundle"
+    save_pretrained_encoder(bundle, cfg.model, model, tokenizer, val_loss)
+    assert (bundle / "encoder.pt").exists()
+    assert (bundle / "tokenizer.json").exists()
 
-    yield_model, tok2 = load_pretrained_bundle(str(tmp_path))
+    yield_model, tok2 = load_pretrained_bundle(str(bundle))
     assert tok2.vocab_size == tokenizer.vocab_size
 
     # the transferred model probes without error and returns a finite R2

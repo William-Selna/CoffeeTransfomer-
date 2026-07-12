@@ -60,20 +60,28 @@ def parse_args():
     p.add_argument("--epochs", type=int, default=None, help="override SFT epochs in the forks")
     p.add_argument("--batch-size", type=int, default=None, help="override batch size (probe + forks)")
     p.add_argument("--probe-epochs", type=int, default=3)
+    p.add_argument("--probe-seeds", type=int, nargs="+", default=[0, 1],
+                   help="average the probe R2 over these seeds (fresh head each) for a stable pick")
     p.add_argument("--eval-r", type=int, default=4)
     return p.parse_args()
 
 
-def probe_encoder(enc_dir, data_cfg, device, generator, probe_epochs, eval_r):
-    model, tokenizer = load_pretrained_bundle(enc_dir)
+def probe_encoder(enc_dir, data_cfg, device, probe_epochs, eval_r, seeds):
+    """Average HTE linear-probe R2 over several seeds (fresh head each), so the
+    encoder pick isn't decided by probe-init noise (gap fix)."""
     examples = load_examples(data_cfg)
-    pools = build_pools(data_cfg, examples)
-    sft_loader = make_loader(data_cfg, make_dataset(data_cfg, tokenizer, pools.sft, True),
-                             tokenizer, data_cfg.train.batch_size, True)
-    test_loader = make_loader(data_cfg, make_dataset(data_cfg, tokenizer, pools.test, False),
-                              tokenizer, data_cfg.train.batch_size, False)
-    return linear_probe_score(model.to(device), sft_loader, test_loader, device,
-                              generator, probe_epochs=probe_epochs, eval_r=eval_r)
+    pools = build_pools(data_cfg, examples)  # pools fixed by data_cfg.train.seed
+    scores = []
+    for s in seeds:
+        gen = set_seed(s)
+        model, tokenizer = load_pretrained_bundle(enc_dir)  # fresh head per seed
+        sft_loader = make_loader(data_cfg, make_dataset(data_cfg, tokenizer, pools.sft, True),
+                                 tokenizer, data_cfg.train.batch_size, True)
+        test_loader = make_loader(data_cfg, make_dataset(data_cfg, tokenizer, pools.test, False),
+                                  tokenizer, data_cfg.train.batch_size, False)
+        scores.append(linear_probe_score(model.to(device), sft_loader, test_loader, device,
+                                          gen, probe_epochs=probe_epochs, eval_r=eval_r))
+    return sum(scores) / len(scores), scores
 
 
 def main():
@@ -85,17 +93,19 @@ def main():
     if args.batch_size:
         data_cfg.train.batch_size = args.batch_size
     device = get_device(data_cfg.train.device)
-    generator = set_seed(data_cfg.train.seed)
 
-    print("== probing candidate encoders (HTE linear-probe R2) ==")
+    print(f"== probing candidate encoders (HTE linear-probe R2, seeds {args.probe_seeds}) ==")
     scores = {}
     for enc in args.encoders:
-        r2 = probe_encoder(enc, data_cfg, device, generator, args.probe_epochs, args.eval_r)
-        scores[enc] = r2
-        print(f"  {enc}: probe R2 = {r2:.4f}")
+        mean_r2, per_seed = probe_encoder(
+            enc, data_cfg, device, args.probe_epochs, args.eval_r, args.probe_seeds
+        )
+        scores[enc] = mean_r2
+        detail = ", ".join(f"{r:.4f}" for r in per_seed)
+        print(f"  {enc}: probe R2 = {mean_r2:.4f}  (per-seed: {detail})")
 
     best = max(scores, key=scores.get)
-    print(f"\n== winner: {best} (probe R2 {scores[best]:.4f}) -> forking into the 4 runs ==")
+    print(f"\n== winner: {best} (mean probe R2 {scores[best]:.4f}) -> forking into the 4 runs ==")
 
     for fork in args.forks:
         for seed in args.seeds:

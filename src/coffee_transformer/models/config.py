@@ -23,6 +23,7 @@ class ModelConfig:
     n_heads: int = 8
     d_ff: int = 1024
     dropout: float = 0.1
+    # pointwise: gelu | relu | silu ; gated (param-matched): swiglu | geglu
     activation: str = "gelu"
 
     # recurrent-depth structure (Section 3): prelude -> core (x r) -> coda

@@ -19,6 +19,10 @@ scaffold. Section numbers refer to that document.
   single pass ≈ the recurrent model's `r` passes (Section 7 requires both
   columns).
 - Test-time compute: `eval/ttc.py` sweeps `r ∈ {1,2,4,8,16}`.
+- FFN activation (`models/transformer.py::FeedForward`): pointwise
+  `gelu|relu|silu` or gated `swiglu|geglu` (param-matched via 2/3·d_ff hidden).
+  A smooth/gated nonlinearity is the safer choice for the weight-tied core; the
+  two pretrain configs use this axis (A=gelu, B=swiglu).
 - **Stubbed:** adaptive halting (ACT / convergence exit) — hook would go in
   `RecurrentDepthEncoder.forward` to break early per-example.
 
@@ -68,12 +72,18 @@ scaffold. Section numbers refer to that document.
   (`data/corpus.py`: canonicalize, salt-strip, dedup, `[UNK]`/leakage checks)
   and pre-tokenized mmap store are implemented; **you supply the raw bytes** and
   the heuristic USPTO→slot-tagged `reactions.jsonl` tagging.
-- Orchestration: `pretrain_pipeline.run_pretraining` runs Stage 1→2 on one
-  MLMModel; `scripts/pretrain.py` saves an encoder checkpoint (weights +
-  ModelConfig + tokenizer) via `training/checkpoint.py`.
-- Two-encoder selection: `scripts/pretrain.py` ×2 (5M/10M) →
-  `training/probe.linear_probe_score` (HTE probe R², the design's probe-only
-  column) → `scripts/select_and_sweep.py` picks the winner and forks it.
+- Orchestration + hardening: `pretrain_pipeline.run_pretraining` runs Stage 1→2
+  on one MLMModel with per-stage **held-out MLM val**, warmup+cosine LR, a
+  **divergence guard** (`DivergenceError` on non-finite/exploding loss), a
+  rolling `encoder_latest.pt` for crash recovery, and **best-by-val** saved as
+  the canonical `encoder.pt`. `scripts/pretrain.py` catches divergence and exits
+  with a recovery hint.
+- Evaluation criteria: intrinsic = held-out MLM val loss (health); extrinsic =
+  HTE linear-probe R² (the selection metric). You pick on the probe, not the
+  MLM loss — they can disagree.
+- Two-encoder selection: `scripts/pretrain.py` ×2 (A=gelu / B=swiglu) →
+  `training/probe.linear_probe_score` averaged over `--probe-seeds` →
+  `scripts/select_and_sweep.py` picks the winner and forks it.
 - Stage 3 SFT: `sft.SFTTrainer` — fresh histogram head, linear-probe→unfreeze,
   encoder LR = `head_lr × encoder_lr_scale`. Pooling chosen once (`cfg.pool`)
   and shared across stages. Pretrained encoder loaded via

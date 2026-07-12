@@ -15,6 +15,7 @@ lives in the data pipeline; see `docs/PIPELINE.md`.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import torch
@@ -23,6 +24,19 @@ from torch.utils.data import DataLoader, Dataset
 
 from ..data.tokenizer import CORE_SPECIALS, SmilesTokenizer
 from ..models.heads import MLMModel
+
+
+class DivergenceError(RuntimeError):
+    """Raised when MLM loss goes non-finite or blows up — the recurrent-depth
+    failure mode a hands-off job must catch instead of burning hours on a dead
+    run (Geiping et al. Section 3: early-training stability)."""
+
+
+def _lr_lambda(step: int, warmup: int, total: int) -> float:
+    if step < warmup:
+        return (step + 1) / max(1, warmup)
+    progress = (step - warmup) / max(1, total - warmup)
+    return 0.5 * (1.0 + math.cos(math.pi * min(1.0, progress)))
 
 
 class MoleculeMLMDataset(Dataset):
@@ -134,6 +148,7 @@ def mlm_collate(batch, pad_id: int):
 class MLMResult:
     steps: int
     final_loss: float
+    best_val_loss: float | None = None
 
 
 class MLMTrainer:
@@ -186,22 +201,79 @@ class MLMTrainer:
                 logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=-100
             )
 
-    def train(self, loader: DataLoader, epochs: int = 1, log_every: int = 50) -> MLMResult:
+    def train(
+        self,
+        loader: DataLoader,
+        val_loader: DataLoader | None = None,
+        epochs: int = 1,
+        warmup_frac: float = 0.05,
+        eval_every: int | None = None,
+        ckpt_every: int | None = None,
+        on_checkpoint=None,
+        log_every: int = 50,
+        max_loss: float = 1e4,
+    ) -> MLMResult:
+        """Train with warmup+cosine LR, divergence guard, held-out val, and
+        checkpoint callbacks.
+
+        `on_checkpoint(model, step, val_loss, is_best)` is called on each val
+        (with `is_best` set) and on each periodic `ckpt_every` tick (val_loss
+        None, is_best False). The caller wires it to actually write a file.
+        Raises `DivergenceError` on non-finite or exploding loss.
+        """
+        total_steps = max(1, epochs * len(loader))
+        warmup = int(warmup_frac * total_steps)
+        scheduler = torch.optim.lr_scheduler.LambdaLR(
+            self.optimizer, lambda s: _lr_lambda(s, warmup, total_steps)
+        )
+
         step = 0
         last = float("nan")
+        best_val = float("inf")
+
+        def _maybe_val(force: bool = False):
+            nonlocal best_val
+            if val_loader is None:
+                return
+            if not force and (eval_every is None or step % eval_every != 0):
+                return
+            v = self.evaluate(val_loader)
+            is_best = v < best_val
+            best_val = min(best_val, v)
+            print(f"[mlm:{self.mask_mode}] step {step} val {v:.4f}{' *best' if is_best else ''}")
+            if on_checkpoint is not None:
+                on_checkpoint(self.model, step, v, is_best)
+
         for _ in range(epochs):
             for batch in loader:
                 self.model.train()
                 loss = self._loss(batch)
+                loss_val = float(loss.detach())
+                if not math.isfinite(loss_val) or loss_val > max_loss:
+                    raise DivergenceError(
+                        f"{self.mask_mode} stage diverged at step {step}: loss={loss_val}"
+                    )
+
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 self.optimizer.step()
+                scheduler.step()
+
                 if step % log_every == 0:
-                    print(f"[mlm:{self.mask_mode}] step {step} loss {float(loss.detach()):.4f}")
+                    print(f"[mlm:{self.mask_mode}] step {step}/{total_steps} loss {loss_val:.4f}")
+                _maybe_val()
+                if ckpt_every and step % ckpt_every == 0 and on_checkpoint is not None:
+                    on_checkpoint(self.model, step, None, False)
                 step += 1
-                last = float(loss.detach())
-        return MLMResult(steps=step, final_loss=last)
+                last = loss_val
+
+        _maybe_val(force=True)
+        return MLMResult(
+            steps=step,
+            final_loss=last,
+            best_val_loss=None if best_val == float("inf") else best_val,
+        )
 
     @torch.no_grad()
     def evaluate(self, loader: DataLoader) -> float:
