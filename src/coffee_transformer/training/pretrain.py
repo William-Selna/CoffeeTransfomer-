@@ -75,6 +75,47 @@ def mask_tokens(
     return input_ids, labels
 
 
+class InMemoryTokenDataset(Dataset):
+    """Wraps a list of {input_ids, slot_type_ids} dicts (synthetic Stage-2 path)."""
+
+    def __init__(self, records: list[dict]):
+        self.records = records
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __getitem__(self, idx: int) -> dict:
+        return self.records[idx]
+
+
+def span_mask_tokens(
+    input_ids: torch.Tensor,
+    slot_type_ids: torch.Tensor,
+    tokenizer: SmilesTokenizer,
+    mask_frac: float = 0.5,
+    generator: torch.Generator | None = None,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Stage-2 span masking: mask ENTIRE slot spans ("infer the plausible ligand
+    from reaction context"). For each sequence, each slot span (slot id > 0) is
+    masked with probability `mask_frac`; the opening slot token stays visible so
+    the model still knows which role to fill. Returns (masked_input, labels)."""
+    labels = torch.full_like(input_ids, -100)
+    masked_input = input_ids.clone()
+    slot_token_ids = {tokenizer.slot_token_id(s) for s in tokenizer.schema.slots}
+
+    for b in range(input_ids.size(0)):
+        present = [int(s) for s in slot_type_ids[b].unique() if int(s) > 0]
+        for slot_id in present:
+            if torch.rand(1, generator=generator).item() > mask_frac:
+                continue
+            span = (slot_type_ids[b] == slot_id) & torch.tensor(
+                [int(t) not in slot_token_ids for t in input_ids[b]], device=input_ids.device
+            )
+            labels[b][span] = input_ids[b][span]
+            masked_input[b][span] = tokenizer.mask_id
+    return masked_input, labels
+
+
 def mlm_collate(batch, pad_id: int):
     max_len = max(len(b["input_ids"]) for b in batch)
     bsz = len(batch)
@@ -84,6 +125,7 @@ def mlm_collate(batch, pad_id: int):
     for i, b in enumerate(batch):
         n = len(b["input_ids"])
         input_ids[i, :n] = torch.tensor(b["input_ids"])
+        slot_type_ids[i, :n] = torch.tensor(b.get("slot_type_ids", [0] * n))
         attention_mask[i, :n] = True
     return {"input_ids": input_ids, "slot_type_ids": slot_type_ids, "attention_mask": attention_mask}
 
@@ -95,13 +137,54 @@ class MLMResult:
 
 
 class MLMTrainer:
-    def __init__(self, model: MLMModel, tokenizer, device, mlm_prob=0.15, lr=3e-4, generator=None):
+    """Masked-SMILES trainer with the perf knobs a tiny model needs to keep a
+    GPU fed: bf16 autocast and optional torch.compile.
+
+    `mask_mode="uniform"` is Stage-1 token masking; `mask_mode="span"` is the
+    Stage-2 slot-span variant.
+    """
+
+    def __init__(
+        self,
+        model: MLMModel,
+        tokenizer,
+        device,
+        mlm_prob: float = 0.15,
+        lr: float = 3e-4,
+        generator: torch.Generator | None = None,
+        mask_mode: str = "uniform",
+        amp: bool = False,
+        compile: bool = False,
+    ):
         self.model = model.to(device)
         self.tok = tokenizer
         self.device = device
         self.mlm_prob = mlm_prob
         self.generator = generator
+        self.mask_mode = mask_mode
         self.optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+        self.amp = amp and device.type == "cuda"
+        if compile and hasattr(torch, "compile"):
+            self.model = torch.compile(self.model)
+
+    def _make_labels(self, batch):
+        if self.mask_mode == "span":
+            return span_mask_tokens(
+                batch["input_ids"], batch["slot_type_ids"], self.tok, generator=self.generator
+            )
+        return mask_tokens(batch["input_ids"], self.tok, self.mlm_prob, self.generator)
+
+    def _loss(self, batch):
+        masked, labels = self._make_labels(batch)
+        masked = masked.to(self.device)
+        labels = labels.to(self.device)
+        slot_type_ids = batch["slot_type_ids"].to(self.device)
+        attention_mask = batch["attention_mask"].to(self.device)
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.amp):
+            logits = self.model(masked, slot_type_ids, attention_mask=attention_mask)
+            return F.cross_entropy(
+                logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=-100
+            )
 
     def train(self, loader: DataLoader, epochs: int = 1, log_every: int = 50) -> MLMResult:
         step = 0
@@ -109,21 +192,22 @@ class MLMTrainer:
         for _ in range(epochs):
             for batch in loader:
                 self.model.train()
-                masked, labels = mask_tokens(batch["input_ids"], self.tok, self.mlm_prob, self.generator)
-                masked = masked.to(self.device)
-                labels = labels.to(self.device)
-                slot_type_ids = batch["slot_type_ids"].to(self.device)
-                attention_mask = batch["attention_mask"].to(self.device)
-
-                logits = self.model(masked, slot_type_ids, attention_mask=attention_mask)
-                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), labels.view(-1), ignore_index=-100)
-
+                loss = self._loss(batch)
                 self.optimizer.zero_grad(set_to_none=True)
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                 self.optimizer.step()
                 if step % log_every == 0:
-                    print(f"[mlm] step {step} loss {float(loss.detach()):.4f}")
+                    print(f"[mlm:{self.mask_mode}] step {step} loss {float(loss.detach()):.4f}")
                 step += 1
                 last = float(loss.detach())
         return MLMResult(steps=step, final_loss=last)
+
+    @torch.no_grad()
+    def evaluate(self, loader: DataLoader) -> float:
+        self.model.eval()
+        total, n = 0.0, 0
+        for batch in loader:
+            total += float(self._loss(batch).detach())
+            n += 1
+        return total / max(1, n)

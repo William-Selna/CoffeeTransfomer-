@@ -16,6 +16,7 @@ from ..data.synthetic import make_synthetic_bh
 from ..data.tokenizer import SmilesTokenizer
 from ..models.heads import YieldModel
 from ..utils.config import RunConfig
+from .checkpoint import load_encoder_into_yield_model, model_config_from_checkpoint
 from .splits import Pools, split_pools
 
 
@@ -37,6 +38,22 @@ def build_model(cfg: RunConfig, tokenizer: SmilesTokenizer) -> YieldModel:
     cfg.model.vocab_size = tokenizer.vocab_size
     cfg.model.num_slot_types = tokenizer.schema.num_slot_types
     return YieldModel(cfg.model)
+
+
+def load_pretrained_bundle(ckpt_dir: str) -> tuple[YieldModel, SmilesTokenizer]:
+    """Build an SFT YieldModel from a pretrained encoder checkpoint directory.
+
+    Rebuilds the exact encoder architecture from the saved ModelConfig, loads
+    the pretrained encoder weights, attaches a FRESH histogram head, and reuses
+    the shared tokenizer saved beside it (Section 6: one vocab across stages).
+    """
+    ckpt_dir = str(ckpt_dir)
+    encoder_pt = f"{ckpt_dir}/encoder.pt"
+    tokenizer = SmilesTokenizer.load(f"{ckpt_dir}/tokenizer.json")
+    model_cfg = model_config_from_checkpoint(encoder_pt)
+    model = YieldModel(model_cfg)
+    load_encoder_into_yield_model(encoder_pt, model)
+    return model, tokenizer
 
 
 def make_dataset(cfg: RunConfig, tokenizer: SmilesTokenizer, examples, train: bool) -> HTEDataset:

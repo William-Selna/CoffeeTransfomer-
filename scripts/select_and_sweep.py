@@ -1,0 +1,115 @@
+#!/usr/bin/env python
+"""Pick the better pretrained encoder, then run the four SFT/RL forks on it.
+
+The full plan end to end:
+  1. scripts/prepare_corpus.py         # once: tokenizer + cleaned/packed corpus
+  2. scripts/pretrain.py x2            # the 5M and 10M candidates (parallel GPUs)
+  3. scripts/select_and_sweep.py       # <-- this: probe both, fork the winner
+
+Selection metric = HTE linear-probe R² (the design's probe-only column): freeze
+each encoder, train only a fresh head, compare. The winner is forked into the
+four SFT/RL configs (each loading it as the transfer encoder).
+
+    python scripts/select_and_sweep.py \
+        --encoders runs/pretrain_5m runs/pretrain_10m
+
+    # offline smoke: build two toy encoders first, then run this on CPU
+    python scripts/select_and_sweep.py --encoders runs/pt_a runs/pt_b \
+        --device cpu --epochs 2 --probe-epochs 1
+"""
+
+from __future__ import annotations
+
+import argparse
+import pathlib
+import subprocess
+import sys
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+
+import torch
+
+from coffee_transformer.training.builder import (
+    build_pools,
+    load_examples,
+    load_pretrained_bundle,
+    make_dataset,
+    make_loader,
+)
+from coffee_transformer.training.probe import linear_probe_score
+from coffee_transformer.utils.config import load_run_config
+from coffee_transformer.utils.device import get_device
+from coffee_transformer.utils.seed import set_seed
+
+FORKS = [
+    "configs/run_sft100_rl0.yaml",
+    "configs/run_sft90_rl10.yaml",
+    "configs/run_sft75_rl25.yaml",
+    "configs/run_sft50_rl50.yaml",
+]
+
+
+def parse_args():
+    p = argparse.ArgumentParser()
+    p.add_argument("--encoders", nargs="+", required=True, help="pretrained encoder dirs")
+    p.add_argument("--data-config", default="configs/run_sft75_rl25.yaml",
+                   help="HTE data settings used for the probe")
+    p.add_argument("--forks", nargs="+", default=FORKS)
+    p.add_argument("--seeds", type=int, nargs="+", default=[0])
+    p.add_argument("--device", default=None)
+    p.add_argument("--epochs", type=int, default=None, help="override SFT epochs in the forks")
+    p.add_argument("--batch-size", type=int, default=None, help="override batch size (probe + forks)")
+    p.add_argument("--probe-epochs", type=int, default=3)
+    p.add_argument("--eval-r", type=int, default=4)
+    return p.parse_args()
+
+
+def probe_encoder(enc_dir, data_cfg, device, generator, probe_epochs, eval_r):
+    model, tokenizer = load_pretrained_bundle(enc_dir)
+    examples = load_examples(data_cfg)
+    pools = build_pools(data_cfg, examples)
+    sft_loader = make_loader(data_cfg, make_dataset(data_cfg, tokenizer, pools.sft, True),
+                             tokenizer, data_cfg.train.batch_size, True)
+    test_loader = make_loader(data_cfg, make_dataset(data_cfg, tokenizer, pools.test, False),
+                              tokenizer, data_cfg.train.batch_size, False)
+    return linear_probe_score(model.to(device), sft_loader, test_loader, device,
+                              generator, probe_epochs=probe_epochs, eval_r=eval_r)
+
+
+def main():
+    args = parse_args()
+    root = pathlib.Path(__file__).resolve().parent.parent
+    data_cfg = load_run_config(root / args.data_config)
+    if args.device:
+        data_cfg.train.device = args.device
+    if args.batch_size:
+        data_cfg.train.batch_size = args.batch_size
+    device = get_device(data_cfg.train.device)
+    generator = set_seed(data_cfg.train.seed)
+
+    print("== probing candidate encoders (HTE linear-probe R2) ==")
+    scores = {}
+    for enc in args.encoders:
+        r2 = probe_encoder(enc, data_cfg, device, generator, args.probe_epochs, args.eval_r)
+        scores[enc] = r2
+        print(f"  {enc}: probe R2 = {r2:.4f}")
+
+    best = max(scores, key=scores.get)
+    print(f"\n== winner: {best} (probe R2 {scores[best]:.4f}) -> forking into the 4 runs ==")
+
+    for fork in args.forks:
+        for seed in args.seeds:
+            cmd = [sys.executable, str(root / "scripts" / "run_sft.py"),
+                   "--config", str(root / fork), "--pretrained", best, "--seed", str(seed)]
+            if args.device:
+                cmd += ["--device", args.device]
+            if args.epochs is not None:
+                cmd += ["--epochs", str(args.epochs)]
+            if args.batch_size is not None:
+                cmd += ["--batch-size", str(args.batch_size)]
+            print(f"\n########## {fork} (seed {seed}) on {best} ##########")
+            subprocess.run(cmd, check=True)
+
+
+if __name__ == "__main__":
+    main()

@@ -74,6 +74,47 @@ class GRPOConfig:
 
 
 @dataclass
+class PretrainConfig:
+    """Stages 1-2 self-supervised pretraining (produces an encoder checkpoint).
+
+    The two target pretraining runs differ only in `pubchem_limit` (5M vs 10M);
+    everything else — model, Stage 2 corpus, schedule — is held fixed so the
+    downstream probe comparison isolates Stage-1 corpus scale.
+    """
+
+    name: str = "pretrain"
+    model: ModelConfig = field(default_factory=ModelConfig)
+
+    # data
+    synthetic: bool = True
+    synthetic_mol_n: int = 800
+    synthetic_rxn_n: int = 800
+    pubchem_path: str | None = None          # .smi/.txt, one SMILES per line
+    pubchem_limit: int | None = None         # 5_000_000 or 10_000_000
+    stage2_reactions_path: str | None = None  # pre-tokenized prefix (see prepare_corpus)
+    tokenizer_path: str | None = None         # shared vocab built by prepare_corpus
+
+    # schedule
+    stage1_enabled: bool = True
+    stage2_enabled: bool = True
+    stage1_epochs: int = 10
+    stage2_epochs: int = 5
+    mlm_prob: float = 0.15
+    span_mask_stage2: bool = True
+
+    # optimization / perf
+    seed: int = 0
+    batch_size: int = 256
+    lr: float = 3.0e-4
+    max_length: int = 256
+    device: str = "cuda"
+    amp: bool = True                          # bf16 autocast on CUDA
+    compile: bool = False                     # torch.compile
+    num_workers: int = 4
+    out_dir: str = "runs/pretrain"
+
+
+@dataclass
 class RunConfig:
     name: str = "run"
     model: ModelConfig = field(default_factory=ModelConfig)
@@ -81,6 +122,9 @@ class RunConfig:
     data: DataConfig = field(default_factory=DataConfig)
     train: TrainConfig = field(default_factory=TrainConfig)
     grpo: GRPOConfig = field(default_factory=GRPOConfig)
+    # optional: path to a pretrained encoder checkpoint (encoder.pt) to load
+    # into the SFT model before Stage 3 (Section 6 transfer column).
+    pretrained_encoder: str | None = None
 
 
 def _from_dict(dc_type, d: dict[str, Any] | None):
@@ -102,4 +146,16 @@ def load_run_config(path: str | Path) -> RunConfig:
         data=_from_dict(DataConfig, raw.get("data")),
         train=_from_dict(TrainConfig, raw.get("train")),
         grpo=_from_dict(GRPOConfig, raw.get("grpo")),
+        pretrained_encoder=raw.get("pretrained_encoder"),
     )
+
+
+def load_pretrain_config(path: str | Path) -> PretrainConfig:
+    raw = yaml.safe_load(Path(path).read_text()) or {}
+    model = _from_dict(ModelConfig, raw.get("model"))
+    top = {k: v for k, v in raw.items() if k != "model"}
+    fields = {f.name for f in dataclasses.fields(PretrainConfig)} - {"model"}
+    unknown = set(top) - fields
+    if unknown:
+        raise ValueError(f"PretrainConfig: unknown keys {sorted(unknown)}")
+    return PretrainConfig(model=model, **{k: v for k, v in top.items() if k in fields})

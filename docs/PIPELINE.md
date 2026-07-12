@@ -61,19 +61,29 @@ scaffold. Section numbers refer to that document.
 ## §6 Four-stage pipeline
 `training/`
 
-- Stage 1 molecular-grammar MLM (PubChem): `pretrain.MLMTrainer` +
-  `MoleculeMLMDataset` + `mask_tokens` (BERT 80/10/10).
-- Stage 2 reactivity MLM (USPTO+ORD), span-masking slot contents: same trainer;
-  **stubbed** = the corpora, hygiene, and heuristic agent-role tagging.
+- Stage 1 molecular-grammar MLM (PubChem): `pretrain.MLMTrainer` (uniform
+  `mask_tokens`, BERT 80/10/10) + `MoleculeMLMDataset`.
+- Stage 2 reactivity MLM (USPTO+ORD), span-masking slot contents:
+  `pretrain.span_mask_tokens` (mask entire slot spans). The corpus hygiene
+  (`data/corpus.py`: canonicalize, salt-strip, dedup, `[UNK]`/leakage checks)
+  and pre-tokenized mmap store are implemented; **you supply the raw bytes** and
+  the heuristic USPTO→slot-tagged `reactions.jsonl` tagging.
+- Orchestration: `pretrain_pipeline.run_pretraining` runs Stage 1→2 on one
+  MLMModel; `scripts/pretrain.py` saves an encoder checkpoint (weights +
+  ModelConfig + tokenizer) via `training/checkpoint.py`.
+- Two-encoder selection: `scripts/pretrain.py` ×2 (5M/10M) →
+  `training/probe.linear_probe_score` (HTE probe R², the design's probe-only
+  column) → `scripts/select_and_sweep.py` picks the winner and forks it.
 - Stage 3 SFT: `sft.SFTTrainer` — fresh histogram head, linear-probe→unfreeze,
   encoder LR = `head_lr × encoder_lr_scale`. Pooling chosen once (`cfg.pool`)
-  and shared across stages. `MLMModel.transfer_encoder_to` copies pretrained
-  weights in.
+  and shared across stages. Pretrained encoder loaded via
+  `builder.load_pretrained_bundle` (rebuilds exact dims, reuses shared vocab).
 - Stage 4 GRPO: `grpo.GRPOTrainer` — k samples/reaction, group-relative
   advantage (no value net), tolerance or ranking reward, optional KL to a frozen
   reference.
-- Build-in-reverse: the SFT-from-scratch baseline is the default runnable path;
-  pretraining bolts underneath by loading an encoder checkpoint.
+- Build-in-reverse: the SFT-from-scratch baseline is the default runnable path
+  (no `pretrained_encoder`); pretraining bolts underneath by pointing a fork at
+  an encoder checkpoint dir.
 - Splits (~60/20/20 supervised/RL/test): `training/splits.py`.
 
 ## §7 Experimental design
@@ -95,23 +105,22 @@ scaffold. Section numbers refer to that document.
 
 # Clarifications / choices to confirm
 
-1. **The four-run axis.** Implemented as SFT/RL ratios `{100/0, 90/10, 75/25,
-   50/50}` (three ratios from §6 + the §7 supervised-only control) = 4 runs
-   "with different SFT %". If you meant the §7 main-grid **data fractions**
-   `{50%, 75%, 100%}` instead (that's 3, not 4), tell me the fourth point and
-   I'll switch the sweep to `data.data_fraction`.
-2. **Histogram bins.** Defaulted to 20 bins over 0–100% (5% width), the "~20
-   buckets" in §5. Confirm bin count / whether yields can exceed 100 (they
-   shouldn't post-cleaning, but the two-hot clamps to edges if so).
-3. **Scale anchor.** Defaults are the 5M-param anchor (`d_model=256`,
-   prelude 2 / core 4). The 10–15M and 30M scale-sweep points and the
-   matched-FLOPs vanilla config aren't pre-written — want me to add config
-   files for those three scale points?
-4. **GRPO reward default.** Set to `tolerance` (smooth, low-variance). The
+1. **The four-run axis — SETTLED.** SFT/RL ratios `{100/0, 90/10, 75/25,
+   50/50}` (`configs/run_sft*_rl*.yaml`), forked from the winning pretrained
+   encoder.
+2. **Pretraining runs — SETTLED.** Two candidates, 5M vs 10M PubChem molecules
+   (`configs/pretrain_5m.yaml` / `pretrain_10m.yaml`), identical otherwise;
+   winner chosen by HTE linear-probe R².
+3. **Scale — SETTLED at ~11M.** Pretrain configs use `d_model=384`,
+   prelude 2 / core 4 (the design's 10–15M recurrent-depth point). Bump
+   `d_model`/`core_layers` for other scale-sweep points; the SFT forks inherit
+   the encoder's dims from the checkpoint automatically.
+4. **Histogram bins.** Defaulted to 20 bins over 0–100% (5% width), the "~20
+   buckets" in §5. Confirm bin count / whether yields can exceed 100 (two-hot
+   clamps to edges if so).
+5. **GRPO reward default.** Set to `tolerance` (smooth, low-variance). The
    `ranking` reward is implemented but noisier; which should be the headline?
-5. **Pretraining corpora.** Stages 1–2 are scaffolded but need real
-   PubChem/USPTO/ORD data + hygiene. Out of scope for "scaffold the SFT runs" —
-   confirm before I build the ingestion/cleaning pipeline.
-6. **Real BH ingestion.** `load_buchwald_hartwig` targets the documented column
-   layout of `Dreher_and_Doyle_input_data.xlsx`. If your copy differs, share a
-   header row and I'll fix `_BH_COLUMNS`.
+6. **Real corpus bytes.** `prepare_corpus.py` implements the hygiene + packing;
+   you supply raw PubChem `.smi`, a slot-tagged `reactions.jsonl` (from USPTO/ORD
+   parsing), and the BH `.xlsx`. If your BH copy's headers differ from
+   `_BH_COLUMNS` in `data/dataset.py`, share a header row and I'll fix it.

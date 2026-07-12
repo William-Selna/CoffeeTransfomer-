@@ -1,0 +1,47 @@
+# Pretraining run A — 5M PubChem molecules.
+# One of two candidate encoders; the linear-probe winner gets forked into the
+# four SFT/RL runs. Differs from pretrain_10m.yaml ONLY in pubchem_limit, so the
+# comparison isolates Stage-1 corpus scale.
+name: pretrain_5m
+
+# ~12-15M recurrent-depth point (the design's mid scale). The weight-tied core
+# is where extra width pays off, so we grow d_model / d_ff over the 5M anchor.
+model:
+  d_model: 384
+  n_heads: 6            # head dim 64
+  d_ff: 1536
+  prelude_layers: 2
+  core_layers: 4
+  recurrent: true
+  train_r: 4
+  randomize_r: true
+  r_min: 1
+  r_max: 8
+  truncated_bptt_k: 4
+  pool: cls
+  num_bins: 20
+  max_position: 256
+
+# Real-run data. For the offline smoke test leave synthetic: true (no downloads).
+synthetic: false
+pubchem_path: data/processed/pubchem.smi         # cleaned, from prepare_corpus.py
+pubchem_limit: 5000000
+stage2_reactions_path: data/processed/reactions  # pretokenized prefix, from prepare_corpus.py
+tokenizer_path: data/processed/tokenizer.json    # shared vocab (covers HTE molecules)
+
+stage1_enabled: true
+stage2_enabled: true
+stage1_epochs: 10
+stage2_epochs: 5
+mlm_prob: 0.15
+span_mask_stage2: true
+
+seed: 0
+batch_size: 256
+lr: 3.0e-4
+max_length: 256
+device: cuda
+amp: true            # bf16 autocast — keeps the H100 fed at this model size
+compile: true        # torch.compile
+num_workers: 8
+out_dir: runs/pretrain_5m

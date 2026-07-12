@@ -25,6 +25,7 @@ from coffee_transformer.training.builder import (
     build_pools,
     build_tokenizer,
     load_examples,
+    load_pretrained_bundle,
     make_dataset,
     make_loader,
 )
@@ -43,6 +44,10 @@ def parse_args():
     p.add_argument("--epochs", type=int, default=None, help="override train.epochs")
     p.add_argument("--seed", type=int, default=None, help="override train.seed")
     p.add_argument("--no-grpo", action="store_true", help="skip Stage 4 even if enabled")
+    p.add_argument("--pretrained", default=None,
+                   help="pretrained encoder dir (encoder.pt + tokenizer.json); "
+                        "overrides pretrained_encoder in the config")
+    p.add_argument("--batch-size", type=int, default=None, help="override batch size")
     return p.parse_args()
 
 
@@ -55,16 +60,27 @@ def main():
         cfg.train.epochs = args.epochs
     if args.seed is not None:
         cfg.train.seed = args.seed
+    if args.pretrained is not None:
+        cfg.pretrained_encoder = args.pretrained
+    if args.batch_size is not None:
+        cfg.train.batch_size = args.batch_size
+        cfg.grpo.batch_size = min(cfg.grpo.batch_size, args.batch_size)
 
     generator = set_seed(cfg.train.seed)
     device = get_device(cfg.train.device)
     print(f"== run {cfg.name} | device {device} | seed {cfg.train.seed} ==")
 
     examples = load_examples(cfg)
-    tokenizer = build_tokenizer(examples)
-    model = build_model(cfg, tokenizer)
+    if cfg.pretrained_encoder:
+        # Transfer column: reuse the pretrained encoder + its shared tokenizer,
+        # attach a fresh histogram head (Section 6, Stage 3).
+        model, tokenizer = load_pretrained_bundle(cfg.pretrained_encoder)
+        print(f"loaded pretrained encoder from {cfg.pretrained_encoder}")
+    else:
+        tokenizer = build_tokenizer(examples)
+        model = build_model(cfg, tokenizer)
     print(f"vocab {tokenizer.vocab_size} | params {count_parameters(model)/1e6:.2f}M "
-          f"| recurrent={cfg.model.recurrent} train_r={cfg.model.resolved_train_r()}")
+          f"| recurrent={model.cfg.recurrent} train_r={model.cfg.resolved_train_r()}")
 
     pools = build_pools(cfg, examples)
     print(f"pools: sft={len(pools.sft)} rl={len(pools.rl)} test={len(pools.test)}")

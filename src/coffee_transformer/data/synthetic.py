@@ -76,3 +76,21 @@ def all_synthetic_smiles(slots: tuple[str, ...] = BUCHWALD_HARTWIG_SLOTS) -> lis
     for slot in slots:
         out.extend(_POOLS.get(slot, []))
     return out
+
+
+def synthetic_molecule_corpus(n: int = 500, seed: int = 0) -> list[str]:
+    """Toy PubChem stand-in for Stage 1 smoke tests: random single molecules."""
+    rng = random.Random(seed)
+    pool = all_synthetic_smiles()
+    return [rng.choice(pool) for _ in range(n)]
+
+
+def synthetic_reaction_corpus(
+    n: int = 500, seed: int = 0, slots: tuple[str, ...] = BUCHWALD_HARTWIG_SLOTS
+) -> list[list[tuple[str, str]]]:
+    """Toy USPTO/ORD stand-in for Stage 2 smoke tests: slot-tagged reactions."""
+    rng = random.Random(seed)
+    reactions: list[list[tuple[str, str]]] = []
+    for _ in range(n):
+        reactions.append([(slot, rng.choice(_POOLS[slot])) for slot in slots if slot in _POOLS])
+    return reactions
