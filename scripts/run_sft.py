@@ -73,8 +73,12 @@ def main():
     examples = load_examples(cfg)
     if cfg.pretrained_encoder:
         # Transfer column: reuse the pretrained encoder + its shared tokenizer,
-        # attach a fresh histogram head (Section 6, Stage 3).
-        model, tokenizer = load_pretrained_bundle(cfg.pretrained_encoder)
+        # attach a fresh histogram head (Section 6, Stage 3). The head is sized
+        # by the run config's num_bins (e.g. 4 coarse bins for the USPTO SFT),
+        # independent of the encoder's pretraining bin count.
+        model, tokenizer = load_pretrained_bundle(
+            cfg.pretrained_encoder, override_num_bins=cfg.model.num_bins
+        )
         print(f"loaded pretrained encoder from {cfg.pretrained_encoder}")
     else:
         tokenizer = build_tokenizer(examples)

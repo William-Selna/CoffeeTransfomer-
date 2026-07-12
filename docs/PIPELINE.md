@@ -81,9 +81,15 @@ scaffold. Section numbers refer to that document.
 - Evaluation criteria: intrinsic = held-out MLM val loss (health); extrinsic =
   HTE linear-probe R² (the selection metric). You pick on the probe, not the
   MLM loss — they can disagree.
-- Two-encoder selection: `scripts/pretrain.py` ×2 (A=gelu / B=swiglu) →
-  `training/probe.linear_probe_score` averaged over `--probe-seeds` →
-  `scripts/select_and_sweep.py` picks the winner and forks it.
+- Candidate selection: a 2×2 grid `{gelu,swiglu}×{seed0,seed1}`
+  (`configs/pretrain_*.yaml`) → `training/probe.linear_probe_score` averaged over
+  `--probe-seeds` → `scripts/select_and_sweep.py` reports the per-activation mean
+  and forks the single best encoder.
+- Crude USPTO SFT (optional, off the main plan): `configs/run_uspto_crude.yaml`
+  — `dataset=USPTO`, `num_bins=4` (25%-wide chunks) to launder USPTO's yield
+  noise into a weak coarse signal; `data/dataset.load_uspto` + a `dataset="USPTO"`
+  ReactionExample keep it separate from HTE (never blend labels). Head auto-resizes
+  to 4 bins on a pretrained encoder via `load_pretrained_bundle(override_num_bins)`.
 - Stage 3 SFT: `sft.SFTTrainer` — fresh histogram head, linear-probe→unfreeze,
   encoder LR = `head_lr × encoder_lr_scale`. Pooling chosen once (`cfg.pool`)
   and shared across stages. Pretrained encoder loaded via

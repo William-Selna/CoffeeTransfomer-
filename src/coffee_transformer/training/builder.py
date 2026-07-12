@@ -10,9 +10,9 @@ from __future__ import annotations
 from torch.utils.data import DataLoader
 
 from ..data.collate import make_collate_fn
-from ..data.dataset import HTEDataset, ReactionExample, load_buchwald_hartwig
+from ..data.dataset import HTEDataset, ReactionExample, load_buchwald_hartwig, load_uspto
 from ..data.slots import BUCHWALD_HARTWIG_SLOTS, DEFAULT_SCHEMA
-from ..data.synthetic import make_synthetic_bh
+from ..data.synthetic import make_synthetic_bh, make_synthetic_uspto
 from ..data.tokenizer import SmilesTokenizer
 from ..models.heads import YieldModel
 from ..utils.config import RunConfig
@@ -22,6 +22,13 @@ from .splits import Pools, split_pools
 
 def load_examples(cfg: RunConfig) -> list[ReactionExample]:
     d = cfg.data
+    if d.dataset == "USPTO":
+        if d.synthetic:
+            return make_synthetic_uspto(n=d.synthetic_n, seed=cfg.train.seed)
+        if d.uspto_path is None:
+            raise ValueError("dataset=USPTO with synthetic=False needs data.uspto_path")
+        return load_uspto(d.uspto_path)
+    # default: Buchwald-Hartwig
     if d.synthetic:
         return make_synthetic_bh(n=d.synthetic_n, seed=cfg.train.seed)
     if d.bh_xlsx is None:
@@ -40,17 +47,24 @@ def build_model(cfg: RunConfig, tokenizer: SmilesTokenizer) -> YieldModel:
     return YieldModel(cfg.model)
 
 
-def load_pretrained_bundle(ckpt_dir: str) -> tuple[YieldModel, SmilesTokenizer]:
+def load_pretrained_bundle(
+    ckpt_dir: str, override_num_bins: int | None = None
+) -> tuple[YieldModel, SmilesTokenizer]:
     """Build an SFT YieldModel from a pretrained encoder checkpoint directory.
 
     Rebuilds the exact encoder architecture from the saved ModelConfig, loads
     the pretrained encoder weights, attaches a FRESH histogram head, and reuses
     the shared tokenizer saved beside it (Section 6: one vocab across stages).
+
+    `override_num_bins` re-sizes the (fresh) head — e.g. a 4-bin coarse head for
+    the crude USPTO SFT on top of a 20-bin-pretrained encoder.
     """
     ckpt_dir = str(ckpt_dir)
     encoder_pt = f"{ckpt_dir}/encoder.pt"
     tokenizer = SmilesTokenizer.load(f"{ckpt_dir}/tokenizer.json")
     model_cfg = model_config_from_checkpoint(encoder_pt)
+    if override_num_bins is not None:
+        model_cfg.num_bins = override_num_bins
     model = YieldModel(model_cfg)
     load_encoder_into_yield_model(encoder_pt, model)
     return model, tokenizer

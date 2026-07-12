@@ -1,0 +1,40 @@
+# Pretraining run — gelu FFN, seed 1.
+# 2x2 grid: {gelu, swiglu} x {seed 0, seed 1}. Two seeds per activation
+# disentangle the FFN effect from seed noise; select_and_sweep.py probes all
+# four on HTE, reports the per-activation mean, and forks the single best
+# encoder. All four fit in parallel on one H100 (tiny model; see README).
+name: pretrain_gelu_s1
+
+model:
+  d_model: 384
+  n_heads: 6            # head dim 64
+  d_ff: 1536
+  prelude_layers: 2
+  core_layers: 4
+  recurrent: true
+  train_r: 4
+  randomize_r: true
+  r_min: 1
+  r_max: 8
+  truncated_bptt_k: 4
+  activation: gelu
+  pool: cls
+  num_bins: 20
+  max_position: 256
+
+# Real-run data (pass --synthetic for the offline smoke). Full corpus.
+synthetic: false
+pubchem_path: data/processed/pubchem.smi
+pubchem_limit: 10000000
+stage2_reactions_path: data/processed/reactions
+tokenizer_path: data/processed/tokenizer.json
+
+# schedule / hardening use PretrainConfig defaults (stage1=10, stage2=5 epochs,
+# held-out val, warmup+cosine, divergence guard, best-by-val + rolling ckpt).
+seed: 1
+batch_size: 256
+device: cuda
+amp: true
+compile: true
+num_workers: 8
+out_dir: runs/pretrain_gelu_s1

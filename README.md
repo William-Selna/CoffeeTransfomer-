@@ -72,13 +72,13 @@ full test-time-compute sweep (R² / MAE / Spearman at r ∈ {1,2,4,8,16}).
 
 ## Full pipeline: pretrain 2 encoders → pick the best → fork the 4 runs
 
-The plan is to pretrain **two** candidate encoders, keep whichever probes better
-on HTE (the design's "probe-only column"), then fork that winner into the four
-SFT/RL runs. The two configs are a matched-seed **architecture comparison**:
-`pretrain_a` = pointwise GELU FFN, `pretrain_b` = gated **SwiGLU** FFN (the
-modern default, param-matched via a 2/3·d_ff hidden width). Swap `pretrain_b` to
-a plain seed rerun, or vary `truncated_bptt_k` instead, if you'd rather test
-fickleness or backprop depth.
+The plan is a **2×2 pretraining grid** — `{gelu, swiglu} × {seed 0, seed 1}` = four
+candidate encoders — so the FFN comparison is disentangled from seed noise. The
+gated SwiGLU FFN is param-matched to GELU (2/3·d_ff hidden width).
+`select_and_sweep.py` probes all four on HTE (the design's "probe-only column"),
+reports the per-activation mean over seeds, and forks the single best encoder
+into the four SFT/RL runs. All four pretrainings fit in parallel on one H100 (see
+[capacity](#target-hardware-cuda)).
 
 ```bash
 # 0. gather data (BH is vendored; PubChem/USPTO fetch on the GPU box — see Data)
@@ -91,23 +91,24 @@ python scripts/prepare_corpus.py \
     --hte data/hte/Buchwald-Hartwig/Dreher_and_Doyle_input_data.xlsx --sheet FullCV_01 \
     --out data/processed
 
-# 2. the two identical candidates (seed 0 and seed 1)
-python scripts/pretrain.py --config configs/pretrain_a.yaml
-python scripts/pretrain.py --config configs/pretrain_b.yaml
+# 2. the four candidates (run concurrently on one H100 — use CUDA MPS)
+for c in gelu_s0 gelu_s1 swiglu_s0 swiglu_s1; do
+    python scripts/pretrain.py --config configs/pretrain_$c.yaml &
+done; wait
 
-# 3. probe both, fork the winner into the four SFT/RL runs
-python scripts/select_and_sweep.py --encoders runs/pretrain_a runs/pretrain_b
+# 3. probe all four, fork the winner into the four SFT/RL runs
+python scripts/select_and_sweep.py     # defaults to the 2x2 encoder dirs
 ```
 
-Offline smoke (no downloads, CPU) — same flow at toy scale:
+Offline smoke (no downloads, CPU) — same flow at toy scale, two of the four:
 
 ```bash
 python scripts/prepare_corpus.py --synthetic --out data/processed
-python scripts/pretrain.py --config configs/pretrain_a.yaml --synthetic --device cpu \
+for c in gelu_s0 swiglu_s0; do
+  python scripts/pretrain.py --config configs/pretrain_$c.yaml --synthetic --device cpu \
     --stage1-epochs 1 --stage2-epochs 1 --num-workers 0 --batch-size 32
-python scripts/pretrain.py --config configs/pretrain_b.yaml --synthetic --device cpu \
-    --stage1-epochs 1 --stage2-epochs 1 --num-workers 0 --batch-size 32
-python scripts/select_and_sweep.py --encoders runs/pretrain_a runs/pretrain_b \
+done
+python scripts/select_and_sweep.py --encoders runs/pretrain_gelu_s0 runs/pretrain_swiglu_s0 \
     --device cpu --epochs 1 --probe-epochs 1 --batch-size 32
 ```
 
@@ -130,17 +131,23 @@ So `pretrain.py` → `select_and_sweep.py` is a single unattended chain.
 ## Target hardware (CUDA)
 
 The model is ~11–30M params, so it fits on anything. Plan of record: **a single
-H100 (80 GB), both pretrainings run serially.** Wall-clock isn't a constraint
-here, so there's no need to parallelize across cards — the two pretrainings plus
-the four SFT/RL forks finish comfortably in a couple of hours, and the SFT+GRPO
-forks are minutes and pennies on top.
+H100 (80 GB) runs all four pretrainings concurrently.**
+
+**Capacity.** One ~11M pretraining run costs ~0.2 GB of weights/optimizer state;
+the rest is activations, which scale with `batch × seq²` (attention) × the ~16
+retained layer-passes (4 core layers × `truncated_bptt_k` + prelude). At realistic
+SMILES lengths (~60–150 tokens) that's ~3–8 GB/run, so **8–12+ runs fit in 80 GB**
+— the 2×2 grid uses four. More importantly, an 11M model can't saturate the
+H100's compute (it's kernel-launch bound on tiny ops), so co-scheduling the runs
+*raises* aggregate throughput rather than just time-slicing. Launch them as
+separate processes and enable **CUDA MPS** for clean concurrency.
 
 - **H100, not H200.** The H200 is the *same Hopper compute* as the H100 (same
-  ~990 dense BF16 TFLOP/s) with more memory (141 GB vs 80 GB). At ~11M params on
-  short SMILES you use a fraction of 80 GB and aren't memory-bound, so H200 buys
-  nothing over H100 for more money.
-- One card is plenty: ~11M params leaves the 80 GB almost empty, so push
-  `batch_size` up and both pretrainings still fit back-to-back.
+  ~990 dense BF16 TFLOP/s) with more memory you won't use at this scale — zero
+  gain for more money.
+- Push `batch_size` up (you have headroom) to improve per-run GPU utilization.
+- Measure the real footprint on your box with `nvidia-smi` while a run is live —
+  the numbers above are analytical estimates (I have no GPU here to profile).
 
 At this scale the GPU is rarely the bottleneck — the input pipeline is. A tiny
 model starves on a naive dataloader, so keep the perf knobs on: bf16
@@ -172,6 +179,20 @@ the PubChem/USPTO fetch on the H100 box (open network). Full source table,
 licenses, and sizes are in [`data/README.md`](data/README.md). Column mapping
 for the BH reader is `_BH_COLUMNS` in `data/dataset.py`.
 
+### Crude USPTO SFT (optional, coarse 4-bin)
+
+Raw USPTO yields are too noisy for fine regression (design §2), but a **coarse
+4-bin (25%-wide) target launders that noise** into a usable weak signal.
+`configs/run_uspto_crude.yaml` runs it: `dataset: USPTO`, `model.num_bins: 4`,
+kept in its own `dataset="USPTO"` so labels are never blended with HTE. It's a
+weak-signal experiment, not a replacement for the HTE SFT.
+
+```bash
+python scripts/run_sft.py --config configs/run_uspto_crude.yaml   # synthetic offline
+# real: set data.synthetic false + data.uspto_path <rsmi>; optionally
+# pretrained_encoder: runs/pretrain_swiglu_s0  (head auto-resizes to 4 bins)
+```
+
 ## Layout
 
 ```
@@ -184,7 +205,7 @@ src/coffee_transformer/
                pretrain_pipeline (Stages 1–2), checkpoint (encoder transfer), probe (selection)
   eval/        R²/MAE/Spearman, test-time-compute sweep
   utils/       config (YAML→dataclasses), seed, device
-configs/       base.yaml (annotated) + four run files + pretrain_a/pretrain_b
+configs/       base.yaml + four SFT/RL runs + run_uspto_crude + pretrain_{gelu,swiglu}_s{0,1}
 scripts/       fetch_data.py, prepare_corpus.py, pretrain.py, select_and_sweep.py,
                run_sft.py, run_grpo.py, sweep_sft_ratio.py
 data/          hte/ (vendored BH) + README (sources/licenses)

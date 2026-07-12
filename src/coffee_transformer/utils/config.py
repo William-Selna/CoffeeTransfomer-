@@ -21,9 +21,10 @@ from ..models.config import ModelConfig
 
 @dataclass
 class DataConfig:
-    dataset: str = "BH"                    # "BH" | "Suzuki" | "BH+Suzuki"
+    dataset: str = "BH"                    # "BH" | "Suzuki" | "USPTO" | "BH+Suzuki"
     # vendored BH data (data/hte/); flip `synthetic: false` in a run config to use it
     bh_xlsx: str | None = "data/hte/Buchwald-Hartwig/Dreher_and_Doyle_input_data.xlsx"
+    uspto_path: str | None = None          # rsmi/tsv for the crude USPTO SFT
     sheet: str = "FullCV_01"               # canonical random fold; Tests 1-4 for OOD
     synthetic: bool = True                 # use the offline toy generator
     synthetic_n: int = 2000

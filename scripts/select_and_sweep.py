@@ -10,12 +10,12 @@ Selection metric = HTE linear-probe R² (the design's probe-only column): freeze
 each encoder, train only a fresh head, compare. The winner is forked into the
 four SFT/RL configs (each loading it as the transfer encoder).
 
-    python scripts/select_and_sweep.py \
-        --encoders runs/pretrain_a runs/pretrain_b
+    python scripts/select_and_sweep.py          # defaults to the 2x2 encoders
 
-    # offline smoke: build two toy encoders first, then run this on CPU
-    python scripts/select_and_sweep.py --encoders runs/pretrain_a runs/pretrain_b \
-        --device cpu --epochs 2 --probe-epochs 1 --batch-size 32
+    # offline smoke on CPU
+    python scripts/select_and_sweep.py \
+        --encoders runs/pretrain_gelu_s0 runs/pretrain_swiglu_s0 \
+        --device cpu --epochs 1 --probe-epochs 1 --batch-size 32
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ from coffee_transformer.training.builder import (
     make_dataset,
     make_loader,
 )
+from coffee_transformer.training.checkpoint import model_config_from_checkpoint
 from coffee_transformer.training.probe import linear_probe_score
 from coffee_transformer.utils.config import load_run_config
 from coffee_transformer.utils.device import get_device
@@ -48,10 +49,18 @@ FORKS = [
     "configs/run_sft50_rl50.yaml",
 ]
 
+# the 2x2 pretraining grid
+ENCODERS = [
+    "runs/pretrain_gelu_s0",
+    "runs/pretrain_gelu_s1",
+    "runs/pretrain_swiglu_s0",
+    "runs/pretrain_swiglu_s1",
+]
+
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--encoders", nargs="+", required=True, help="pretrained encoder dirs")
+    p.add_argument("--encoders", nargs="+", default=ENCODERS, help="pretrained encoder dirs")
     p.add_argument("--data-config", default="configs/run_sft75_rl25.yaml",
                    help="HTE data settings used for the probe")
     p.add_argument("--forks", nargs="+", default=FORKS)
@@ -96,13 +105,21 @@ def main():
 
     print(f"== probing candidate encoders (HTE linear-probe R2, seeds {args.probe_seeds}) ==")
     scores = {}
+    by_activation: dict[str, list[float]] = {}
     for enc in args.encoders:
         mean_r2, per_seed = probe_encoder(
             enc, data_cfg, device, args.probe_epochs, args.eval_r, args.probe_seeds
         )
         scores[enc] = mean_r2
+        act = model_config_from_checkpoint(f"{enc}/encoder.pt").activation
+        by_activation.setdefault(act, []).append(mean_r2)
         detail = ", ".join(f"{r:.4f}" for r in per_seed)
-        print(f"  {enc}: probe R2 = {mean_r2:.4f}  (per-seed: {detail})")
+        print(f"  {enc} [{act}]: probe R2 = {mean_r2:.4f}  (per-seed: {detail})")
+
+    # the 2x2 comparison: mean over seeds per activation
+    print("\n-- per-activation mean probe R2 (over seeds) --")
+    for act, vals in by_activation.items():
+        print(f"  {act}: {sum(vals)/len(vals):.4f}  (n={len(vals)})")
 
     best = max(scores, key=scores.get)
     print(f"\n== winner: {best} (mean probe R2 {scores[best]:.4f}) -> forking into the 4 runs ==")

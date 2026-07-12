@@ -17,6 +17,14 @@ def test_two_hot_rows_sum_to_one():
     assert torch.allclose(t.sum(dim=1), torch.ones(4), atol=1e-5)
 
 
+def test_coarse_4bin_two_hot_25pct_chunks():
+    # 25%-wide chunks: centers at 12.5 / 37.5 / 62.5 / 87.5
+    t = two_hot_targets(torch.tensor([10.0, 90.0]), num_bins=4, y_min=0.0, y_max=100.0)
+    assert torch.allclose(t.sum(dim=1), torch.ones(2), atol=1e-5)
+    assert torch.argmax(t[0]).item() == 0    # 10% -> lowest chunk
+    assert torch.argmax(t[1]).item() == 3    # 90% -> highest chunk
+
+
 def test_two_hot_places_mass_on_bracketing_bins():
     # 63% with 20 bins of width 5 -> centers at 62.5 (bin 12) and 67.5 (bin 13)
     y = torch.tensor([63.0])

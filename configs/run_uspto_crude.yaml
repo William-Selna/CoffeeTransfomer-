@@ -1,0 +1,38 @@
+# Crude USPTO SFT — coarse 4-bin (25%-wide) yield buckets.
+#
+# Raw USPTO/Lowe yields are too noisy for fine regression (design §2: "unusable
+# for regression — binarize as a weak signal at most"). Coarsening to 25%-wide
+# chunks launders that noise: a +/-15-20% yield error mostly stays in the same
+# bucket. So this is a deliberately CRUDE, weak-signal run — NOT a replacement
+# for the ~4k HTE examples that carry the real signal, and kept in its own
+# dataset so labels are never blended with HTE.
+name: uspto_crude
+
+data:
+  dataset: USPTO
+  synthetic: true          # offline toy USPTO; set false + uspto_path for real
+  synthetic_n: 2000
+  uspto_path: null         # rsmi/tsv (reactants>agents>products, yield); see load_uspto
+  sft_fraction: 1.0        # no RL stage for the crude pass
+  rl_fraction: 0.0
+  test_fraction: 0.20
+
+model:
+  num_bins: 4              # <-- 25%-wide chunks (0-25 / 25-50 / 50-75 / 75-100)
+  # d_model etc. default to the 5M anchor for a from-scratch crude run; when
+  # `pretrained_encoder` is set, the encoder dims come from the checkpoint and
+  # only this num_bins re-sizes the fresh head.
+
+loss:
+  multi_scale_bins: [2]    # must divide num_bins=4 (default [10,5,2] would not)
+  use_pairwise: false      # noisy labels -> skip the fine-grained pairwise aux
+
+train:
+  device: cuda
+  out_dir: runs/uspto_crude
+
+grpo:
+  enabled: false
+
+# Optional: reuse a pretrained encoder (head is re-sized to 4 bins automatically)
+# pretrained_encoder: runs/pretrain_swiglu_s0

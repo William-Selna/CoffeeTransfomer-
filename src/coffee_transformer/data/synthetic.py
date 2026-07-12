@@ -94,3 +94,30 @@ def synthetic_reaction_corpus(
     for _ in range(n):
         reactions.append([(slot, rng.choice(_POOLS[slot])) for slot in slots if slot in _POOLS])
     return reactions
+
+
+# Toy fragments for a USPTO-shaped reactant>agent>product corpus.
+_USPTO_POOLS = {
+    "REACTANT": ["CC(=O)O", "c1ccccc1N", "CCBr", "O=C(Cl)c1ccccc1", "NCCO"],
+    "AGENT": ["[Pd]", "CN(C)C=O", "CCN(CC)CC", "O", "ClCCl"],
+    "PRODUCT": ["CC(=O)Nc1ccccc1", "CCOC(C)=O", "O=C(O)c1ccccc1", "c1ccc(CO)cc1"],
+}
+
+
+def make_synthetic_uspto(n: int = 1000, seed: int = 0) -> list["object"]:
+    """Toy USPTO-shaped data for the crude-SFT smoke path.
+
+    Reactant>agent>product slots with a DELIBERATELY NOISY yield (heavy noise +
+    success-skew), mimicking why raw USPTO yields are only good for a coarse
+    (few-bin) target. Not chemistry — plumbing only.
+    """
+    from .dataset import ReactionExample
+
+    rng = random.Random(seed)
+    out = []
+    for _ in range(n):
+        comps = [(slot, rng.choice(pool)) for slot, pool in _USPTO_POOLS.items()]
+        signal = _hash_unit(comps[0][1] + comps[2][1], salt=7)  # weak structural signal
+        noisy = 100.0 * (0.55 + 0.35 * signal) + rng.gauss(0.0, 20.0)  # big noise, skewed high
+        out.append(ReactionExample(comps, float(max(0.0, min(100.0, noisy))), dataset="USPTO"))
+    return out

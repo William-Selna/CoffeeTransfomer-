@@ -117,3 +117,46 @@ def load_buchwald_hartwig(
             )
         )
     return examples
+
+
+def load_uspto(
+    path: str | Path,
+    smiles_col: int = 0,
+    yield_col: int = 1,
+    sep: str = "\t",
+    has_header: bool = False,
+) -> list[ReactionExample]:
+    """Crude USPTO reaction+yield loader for the coarse-bin SFT experiment.
+
+    Expects a delimited file with a reaction SMILES (`reactants>agents>products`)
+    and a yield in [0, 100]. Adjust `smiles_col`/`yield_col`/`sep` to your file
+    (the exact Lowe extraction layout varies by release). Reactants/agents/
+    products become REACTANT/AGENT/PRODUCT slot spans — deliberately crude, and
+    kept in a separate `dataset="USPTO"` so labels are never blended with HTE.
+
+    NOTE: raw USPTO yields are noisy (design §2). This is for a *coarse* target
+    (few wide bins) only; never regress it at fine resolution.
+    """
+    examples: list[ReactionExample] = []
+    with open(path) as fh:
+        for i, line in enumerate(fh):
+            if has_header and i == 0:
+                continue
+            parts = line.rstrip("\n").split(sep)
+            if len(parts) <= max(smiles_col, yield_col):
+                continue
+            try:
+                y = float(parts[yield_col])
+            except ValueError:
+                continue
+            rxn = parts[smiles_col]
+            segs = rxn.split(">")
+            if len(segs) != 3:
+                continue
+            reactants, agents, products = segs
+            comps = [("REACTANT", reactants)]
+            if agents:
+                comps.append(("AGENT", agents))
+            comps.append(("PRODUCT", products))
+            examples.append(ReactionExample(comps, float(y), dataset="USPTO"))
+    return examples

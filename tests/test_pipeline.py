@@ -49,6 +49,29 @@ def test_split_fractions_partition_pool():
     assert len(pools.sft) + len(pools.rl) + len(pools.test) == len(examples)
 
 
+def test_uspto_crude_4bin_sft_runs():
+    # crude USPTO SFT with 25%-wide (4-bin) coarse target, from scratch
+    cfg = _tiny_cfg()
+    cfg.data.dataset = "USPTO"
+    cfg.data.synthetic_n = 160
+    cfg.model.num_bins = 4
+    cfg.loss.multi_scale_bins = [2]      # must divide num_bins=4
+    cfg.loss.use_pairwise = False
+    gen = set_seed(0)
+    device = torch.device("cpu")
+    examples = load_examples(cfg)
+    assert examples[0].dataset == "USPTO"
+    tok = build_tokenizer(examples)
+    model = build_model(cfg, tok)
+    assert model.head.centers.numel() == 4    # 4 coarse chunks
+    pools = build_pools(cfg, examples)
+    sft_loader = make_loader(cfg, make_dataset(cfg, tok, pools.sft, True), tok, 16, True)
+    test_loader = make_loader(cfg, make_dataset(cfg, tok, pools.test, False), tok, 16, False)
+    res = SFTTrainer(model, YieldLoss(cfg.loss), cfg.train, device, gen).train(sft_loader, test_loader)
+    assert res.steps > 0
+    assert torch.isfinite(torch.tensor(res.ttc[cfg.train.eval_r_values[0]]["r2"]))
+
+
 def test_sft_then_grpo_runs_and_is_finite():
     cfg = _tiny_cfg()
     gen = set_seed(0)
