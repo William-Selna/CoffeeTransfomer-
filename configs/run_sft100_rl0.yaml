@@ -1,0 +1,17 @@
+# Run 1 of 4 — SFT 100 / RL 0 (supervised-only control).
+# "Does RL-on-a-held-out-slice beat just supervising on everything?" needs this
+# baseline: all labeled (non-test) data goes to SFT, no RL stage.
+name: sft100_rl0
+
+data:
+  synthetic: true          # set false + bh_xlsx: <path> for the real BH data
+  sft_fraction: 1.0
+  rl_fraction: 0.0
+  test_fraction: 0.20
+
+train:
+  device: cuda
+  out_dir: runs/sft100_rl0
+
+grpo:
+  enabled: false

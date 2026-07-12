@@ -1,0 +1,19 @@
+# Run 4 of 4 — SFT 50 / RL 50.
+# Stress point: does a large RL share help or just add variance when total
+# labeled data is ~3k? Watch the OOD (additive-holdout) splits especially.
+name: sft50_rl50
+
+data:
+  synthetic: true          # set false + bh_xlsx: <path> for the real BH data
+  sft_fraction: 0.50
+  rl_fraction: 0.50
+  test_fraction: 0.20
+
+train:
+  device: cuda
+  out_dir: runs/sft50_rl50
+
+grpo:
+  enabled: true
+  reward: tolerance
+  tolerance: 10.0

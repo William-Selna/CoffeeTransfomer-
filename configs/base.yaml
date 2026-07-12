@@ -1,0 +1,85 @@
+# Annotated reference of every config section and its defaults.
+# The four run files (run_sft*_rl*.yaml) override only what differs; anything
+# omitted falls back to the dataclass defaults documented here.
+
+name: base
+
+model:
+  # ~5M-param anchor point (Section 6 scale plan).
+  d_model: 256
+  n_heads: 8
+  d_ff: 1024
+  dropout: 0.1
+  prelude_layers: 2
+  core_layers: 4
+  recurrent: true          # false -> vanilla-transformer baseline (r forced to 1)
+  input_injection: true    # re-inject embedding as (s + h) every iteration
+  state_init_std: 0.4
+  train_r: 4               # nominal recurrence at train time
+  randomize_r: true        # sample r in [r_min, r_max] each step
+  r_min: 1
+  r_max: 8
+  truncated_bptt_k: 4      # backprop through only the last k iterations
+  typed_attention: embedding   # embedding | per_slot_kqv (ablation)
+  pool: cls                # cls | mean (choose once, keep across all stages)
+  num_bins: 20             # yield histogram over [0, 100]
+  yield_min: 0.0
+  yield_max: 100.0
+  max_position: 256
+
+loss:
+  lambda_two_hot: 1.0
+  use_multi_scale: true
+  lambda_multi_scale: 0.3
+  multi_scale_bins: [10, 5, 2]
+  use_moments: true
+  lambda_moment: 0.3
+  match_variance: false
+  deep_supervision: true
+  deep_supervision_scheme: linear   # uniform | linear | last
+  use_pairwise: true
+  lambda_pairwise: 0.3
+  pairs_per_batch: 64
+  pairwise_margin_weight: 0.0
+
+data:
+  dataset: BH
+  synthetic: true          # offline toy generator; set false + bh_xlsx for real data
+  synthetic_n: 2000
+  bh_xlsx: null            # path to Dreher_and_Doyle_input_data.xlsx
+  sheet: FullCV_01         # canonical random fold; Tests 1-4 for OOD
+  sft_fraction: 0.75       # <-- the four-run axis
+  rl_fraction: 0.25        # <-- (sft_fraction + rl_fraction must equal 1)
+  test_fraction: 0.20
+  data_fraction: 1.0       # main-grid data-efficiency axis {0.5, 0.75, 1.0}
+  randomize_order: true
+  randomize_smiles_prob: 0.0   # >0 requires RDKit
+  max_length: 256
+
+train:
+  seed: 0
+  epochs: 20
+  batch_size: 64
+  head_lr: 3.0e-3
+  encoder_lr_scale: 0.1    # encoder LR = head_lr * scale
+  weight_decay: 0.01
+  warmup_frac: 0.05
+  linear_probe_steps: 200  # freeze encoder, train head first
+  grad_clip: 1.0
+  deep_supervision: true
+  eval_r_values: [1, 2, 4, 8, 16]   # test-time-compute sweep
+  eval_every_epochs: 5
+  device: cuda
+  log_every: 20
+  out_dir: runs/base
+
+grpo:
+  enabled: false
+  group_size: 8            # k predictions per reaction
+  epochs: 5
+  batch_size: 32
+  lr: 1.0e-4
+  reward: tolerance        # tolerance | ranking
+  tolerance: 10.0
+  kl_coef: 0.0
+  sample_r: 4

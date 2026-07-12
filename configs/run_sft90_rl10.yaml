@@ -1,0 +1,18 @@
+# Run 2 of 4 — SFT 90 / RL 10.
+# The LLM-era default: much SFT, a little RL. Does it hold at ~3k examples?
+name: sft90_rl10
+
+data:
+  synthetic: true          # set false + bh_xlsx: <path> for the real BH data
+  sft_fraction: 0.90
+  rl_fraction: 0.10
+  test_fraction: 0.20
+
+train:
+  device: cuda
+  out_dir: runs/sft90_rl10
+
+grpo:
+  enabled: true
+  reward: tolerance
+  tolerance: 10.0

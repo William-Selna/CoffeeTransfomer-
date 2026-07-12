@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Data / corpora (large; keep out of git — see README)
+data/raw/
+data/processed/
+data/cache/
+*.xlsx
+*.csv.gz
+*.smi
+
+# Training artifacts
+runs/
+checkpoints/
+outputs/
+wandb/
+*.ckpt
+*.pt
+*.pth
+
+# Notebooks / editors
+.ipynb_checkpoints/
+.vscode/
+.idea/
+
+# OS
+.DS_Store

@@ -1,0 +1,18 @@
+# Run 3 of 4 — SFT 75 / RL 25.
+# The design's canonical ~60/20/20 supervised/RL/test structure (Section 7).
+name: sft75_rl25
+
+data:
+  synthetic: true          # set false + bh_xlsx: <path> for the real BH data
+  sft_fraction: 0.75
+  rl_fraction: 0.25
+  test_fraction: 0.20
+
+train:
+  device: cuda
+  out_dir: runs/sft75_rl25
+
+grpo:
+  enabled: true
+  reward: tolerance
+  tolerance: 10.0
