@@ -10,12 +10,35 @@ from config.
 Status: **runnable scaffold**. The architecture, losses, SFT trainer, GRPO
 trainer, the full two-stage pretraining pipeline, the encoder-transfer +
 probe-selection flow, eval/TTC harness, and a synthetic data path all run
-end-to-end on CPU today (20 unit tests pass, plus a full
-`prepare → pretrain ×2 → probe-select → 4-fork` smoke run). What remains before
+end-to-end on CPU today (29 unit tests pass, and `make preflight` + `make smoke`
+run the whole `prepare → pretrain → probe-select → 4-fork → USPTO` pipeline on
+synthetic data). What remains before
 paper-grade results is wiring the *real* corpora — see [Data](#data) and
 [What's stubbed](#whats-stubbed-vs-real).
 
 ---
+
+## Run it
+
+Everything is driven by a Makefile (`make help` for all targets).
+
+```bash
+make setup        # pip install -e ".[chem,dev]"
+make preflight    # env + plumbing check → GO / NO-GO (safe, CPU, ~1 min)
+make smoke        # full pipeline on synthetic data, CPU — the debug-first gate
+
+# on the H100 box (open network):
+make fetch        # download PubChem + USPTO (BH already vendored)
+make reactions    # USPTO → slot-tagged data/raw/reactions.jsonl
+make prepare      # clean + pre-tokenize corpus → data/processed/
+make mps          # start CUDA MPS (co-schedule the 4 runs)
+make pretrain     # the 2×2 grid, four runs in parallel
+make select       # probe all four, fork the winner into the 4 SFT/RL runs
+# make all        # reactions → prepare → pretrain → select in one go
+```
+
+`make preflight` and `make smoke` both pass today (CPU), so the plumbing is
+verified end-to-end before you spend a GPU-hour.
 
 ## Install
 
@@ -197,8 +220,8 @@ python scripts/run_sft.py --config configs/run_uspto_crude.yaml   # synthetic of
 
 ```
 src/coffee_transformer/
-  data/        SMILES tokenizer, slot schema, HTE dataset + BH loader, augment,
-               collate, synthetic, corpus (ingestion/hygiene/pre-tokenization)
+  data/        SMILES tokenizer, slot schema, HTE dataset + BH/USPTO loaders,
+               augment, collate, synthetic, corpus (hygiene/pre-tokenization), tagging
   models/      embeddings, (typed) attention, transformer block, recurrent-depth encoder, heads
   losses/      two-hot + multi-scale CE, moment matching, pairwise, deep-supervision combiner
   training/    splits, builder, SFT (Stage 3), GRPO (Stage 4), MLM pretrain +
@@ -206,10 +229,12 @@ src/coffee_transformer/
   eval/        R²/MAE/Spearman, test-time-compute sweep
   utils/       config (YAML→dataclasses), seed, device
 configs/       base.yaml + four SFT/RL runs + run_uspto_crude + pretrain_{gelu,swiglu}_s{0,1}
-scripts/       fetch_data.py, prepare_corpus.py, pretrain.py, select_and_sweep.py,
-               run_sft.py, run_grpo.py, sweep_sft_ratio.py
+scripts/       fetch_data.py, build_reactions_jsonl.py, prepare_corpus.py,
+               pretrain.py, select_and_sweep.py, run_sft.py, run_grpo.py,
+               sweep_sft_ratio.py, preflight.py, make_tarball.sh
+Makefile       one-command orchestration (make help)
 data/          hte/ (vendored BH) + README (sources/licenses)
-tests/         tokenizer, model, losses, pipeline, pretrain
+tests/         tokenizer, model, losses, pipeline, pretrain, tagging
 docs/          PIPELINE.md — maps every design section to the code
 ```
 
