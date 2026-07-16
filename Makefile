@@ -5,7 +5,9 @@
 
 PY ?= python
 PUBCHEM ?= data/raw/pubchem.smi
-USPTO ?= data/raw/uspto_1976_Sep2016.rsmi.gz
+# figshare ships USPTO as a .7z — `make fetch` downloads it, then extract:
+#   7z x data/raw/uspto_1976_Sep2016.7z -odata/raw/   (needs p7zip-full)
+USPTO ?= data/raw/1976_Sep2016_USPTOgrants_smiles.rsmi
 PUBCHEM_LIMIT ?= 10000000
 ENCODERS = runs/pretrain_gelu_s0 runs/pretrain_gelu_s1 runs/pretrain_swiglu_s0 runs/pretrain_swiglu_s1
 
@@ -50,6 +52,7 @@ fetch:
 > $(PY) scripts/fetch_data.py --pubchem --limit $(PUBCHEM_LIMIT) --uspto --ord
 
 reactions:
+> @test -f $(USPTO) || { echo "USPTO file $(USPTO) not found — did you extract the .7z? (7z x data/raw/uspto_1976_Sep2016.7z -odata/raw/)"; exit 1; }
 > $(PY) scripts/build_reactions_jsonl.py --uspto $(USPTO) --out data/raw/reactions.jsonl
 
 prepare:

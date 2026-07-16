@@ -27,7 +27,20 @@ from coffee_transformer.data.tagging import write_reactions_jsonl
 
 
 def _open(path: str):
-    return gzip.open(path, "rt") if str(path).endswith(".gz") else open(path)
+    """Open by sniffing the magic bytes, not the extension (figshare ships the
+    USPTO set as .7z even when it's named .gz)."""
+    with open(path, "rb") as fh:
+        magic = fh.read(6)
+    if magic[:2] == b"\x1f\x8b":                       # gzip
+        return gzip.open(path, "rt")
+    if magic[:2] == b"7z" or magic[:6] == b"7z\xbc\xaf\x27\x1c":  # 7-Zip
+        raise SystemExit(
+            f"{path} is a 7-Zip archive, not gzip. Extract it first:\n"
+            f"  sudo apt-get install -y p7zip-full\n"
+            f"  7z x {path} -odata/raw/\n"
+            f"then point --uspto at the extracted .rsmi file."
+        )
+    return open(path)                                  # plain text (.rsmi/.tsv)
 
 
 def _uspto_reactions(path: str, smiles_col: int, sep: str, limit: int | None):

@@ -21,7 +21,9 @@ you can always download by hand and drop the file in the right place.
 from __future__ import annotations
 
 import argparse
+import gzip
 import pathlib
+import shutil
 import sys
 import urllib.request
 
@@ -47,10 +49,10 @@ def _download(url: str, dest: pathlib.Path, desc: str) -> bool:
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
         print(f"[{desc}] {url}")
-        with urllib.request.urlopen(url, timeout=60) as r:  # noqa: S310 (trusted URLs)
-            data = r.read()
-        dest.write_bytes(data)
-        print(f"[{desc}] saved {dest} ({len(data)/1e6:.1f} MB)")
+        # stream to disk in chunks — these files are GBs, never buffer in RAM
+        with urllib.request.urlopen(url, timeout=120) as r, open(dest, "wb") as f:  # noqa: S310
+            shutil.copyfileobj(r, f, length=1 << 20)
+        print(f"[{desc}] saved {dest} ({dest.stat().st_size/1e6:.1f} MB)")
         return True
     except Exception as e:  # network blocked / host down
         print(f"[{desc}] FAILED ({e}). Download by hand from:\n    {url}\n  -> {dest}")
@@ -67,13 +69,39 @@ def fetch_hte() -> None:
 
 
 def fetch_pubchem(limit: int | None) -> None:
-    dest = RAW_DIR / "CID-SMILES.gz"
-    if _download(PUBCHEM_URL, dest, "PubChem") and limit:
-        print(f"[PubChem] next: zcat {dest} | cut -f2 | head -n {limit} > data/raw/pubchem.smi")
+    """Stream-decompress CID-SMILES.gz and write the first `limit` SMILES straight
+    to data/raw/pubchem.smi (what prepare_corpus.py needs) — never stores the
+    full ~2 GB / ~100M-line file."""
+    out = RAW_DIR / "pubchem.smi"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    cap = limit or 10_000_000
+    n = 0
+    try:
+        print(f"[PubChem] streaming {PUBCHEM_URL}")
+        with urllib.request.urlopen(PUBCHEM_URL, timeout=120) as resp:  # noqa: S310
+            with gzip.GzipFile(fileobj=resp) as gz, open(out, "w") as w:
+                for raw in gz:
+                    parts = raw.decode("ascii", "ignore").rstrip("\n").split("\t")
+                    if len(parts) < 2:
+                        continue
+                    w.write(parts[1] + "\n")  # column 1 is CID, column 2 is SMILES
+                    n += 1
+                    if n >= cap:
+                        break
+        print(f"[PubChem] wrote {n} SMILES -> {out}")
+    except Exception as e:
+        print(f"[PubChem] FAILED ({e}). Manual:\n"
+              f"    curl -L {PUBCHEM_URL} -o data/raw/CID-SMILES.gz\n"
+              f"    zcat data/raw/CID-SMILES.gz | cut -f2 | head -n {cap} > {out}")
 
 
 def fetch_uspto() -> None:
-    _download(USPTO_FIGSHARE, RAW_DIR / "uspto_1976_Sep2016.rsmi.gz", "USPTO")
+    dest = RAW_DIR / "uspto_1976_Sep2016.7z"   # figshare ships a 7-Zip archive
+    if _download(USPTO_FIGSHARE, dest, "USPTO"):
+        print(f"[USPTO] 7-Zip archive — extract before use:\n"
+              f"    sudo apt-get install -y p7zip-full\n"
+              f"    7z x {dest} -odata/raw/\n"
+              f"  then: python scripts/build_reactions_jsonl.py --uspto data/raw/<extracted>.rsmi ...")
 
 
 def fetch_ord() -> None:
