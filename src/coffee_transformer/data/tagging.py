@@ -19,8 +19,18 @@ than being dropped.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Iterable
+
+# USPTO (Lowe) reactions are atom-mapped ([CH3:1], [C:2], ...). Each mapped atom
+# is a distinct bracket token, which would blow the ~300 vocab up into thousands.
+# Strip the ":<n>" map labels before tagging/tokenizing.
+_ATOM_MAP_RE = re.compile(r":\d+\]")
+
+
+def strip_atom_map(smiles: str) -> str:
+    return _ATOM_MAP_RE.sub("]", smiles)
 
 try:  # optional
     from rdkit import Chem  # type: ignore
@@ -81,7 +91,7 @@ def tag_agent(smiles: str) -> str:
 
 def tag_reaction(rxn_smiles: str) -> list[tuple[str, str]]:
     """`reactants>agents>products` -> ordered [(slot, smiles), ...] or [] if malformed."""
-    segs = rxn_smiles.strip().split(">")
+    segs = strip_atom_map(rxn_smiles.strip()).split(">")
     if len(segs) != 3:
         return []
     reactants, agents, products = segs
