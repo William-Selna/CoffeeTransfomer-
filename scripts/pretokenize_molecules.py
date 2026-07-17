@@ -18,6 +18,7 @@ import sys
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
 from coffee_transformer.data.corpus import (
+    augmented_molecule_records,
     molecule_records,
     pretokenize_records,
     read_smiles_lines,
@@ -31,12 +32,21 @@ def main():
     p.add_argument("--tokenizer", default="data/processed/tokenizer.json")
     p.add_argument("--out", default="data/processed/molecules", help="output prefix")
     p.add_argument("--max-length", type=int, default=256)
+    p.add_argument("--augment", type=int, default=1,
+                   help="spellings per molecule: 1 = canonical only; 5 = canonical + 4 "
+                        "randomized SMILES (teaches spelling-invariance; needs RDKit)")
     args = p.parse_args()
 
     tok = SmilesTokenizer.load(args.tokenizer)
     mols = read_smiles_lines(args.smi)
-    print(f"tokenizing {len(mols)} molecules -> {args.out}.* ...")
-    meta = pretokenize_records(molecule_records(mols, tok, args.max_length), args.out)
+    if args.augment > 1:
+        print(f"tokenizing {len(mols):,} molecules x{args.augment} spellings -> {args.out}.* "
+              f"(this takes a while — RDKit re-renders each molecule) ...")
+        records = augmented_molecule_records(mols, tok, args.max_length, args.augment)
+    else:
+        print(f"tokenizing {len(mols):,} molecules -> {args.out}.* ...")
+        records = molecule_records(mols, tok, args.max_length)
+    meta = pretokenize_records(records, args.out)
     print(f"done: {meta}")
 
 

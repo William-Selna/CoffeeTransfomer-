@@ -53,6 +53,9 @@ def parse_args():
     p.add_argument("--stage2-epochs", type=int, default=None)
     p.add_argument("--num-workers", type=int, default=None, help="override dataloader workers")
     p.add_argument("--batch-size", type=int, default=None, help="override batch size")
+    p.add_argument("--resume", default=None,
+                   help="continue from a saved encoder: a run dir (uses encoder.pt or "
+                        "encoder_latest.pt) or a direct .pt path — for the canonical->augmented hot swap")
     p.add_argument("--no-compile", action="store_true")
     return p.parse_args()
 
@@ -75,13 +78,23 @@ def main():
     if args.no_compile:
         cfg.compile = False
 
+    resume_from = None
+    if args.resume:
+        rp = pathlib.Path(args.resume)
+        if rp.is_dir():
+            cand = rp / "encoder.pt"
+            resume_from = str(cand if cand.exists() else rp / "encoder_latest.pt")
+        else:
+            resume_from = str(rp)
+
     generator = set_seed(cfg.seed)
     device = get_device(cfg.device)
     print(f"== pretrain {cfg.name} | device {device} | synthetic={cfg.synthetic} "
-          f"| activation={cfg.model.activation} | seed={cfg.seed} ==")
+          f"| activation={cfg.model.activation} | seed={cfg.seed}"
+          f"{' | RESUME' if resume_from else ''} ==")
 
     try:
-        model, tokenizer, val_loss = run_pretraining(cfg, device, generator)
+        model, tokenizer, val_loss = run_pretraining(cfg, device, generator, resume_from=resume_from)
     except DivergenceError as e:
         print(f"\n[DIVERGED] {e}\n"
               f"  A rolling checkpoint may exist at {cfg.out_dir}/encoder_latest.pt.\n"

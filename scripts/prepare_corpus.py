@@ -61,6 +61,8 @@ def parse_args():
     p.add_argument("--hte", default=None, help="BH xlsx (for vocab + leakage check)")
     p.add_argument("--sheet", default="FullCV_01")
     p.add_argument("--max-length", type=int, default=256)
+    p.add_argument("--augment", type=int, default=1,
+                   help="Stage-1 spellings per molecule (5 = canonical + 4 randomized; needs RDKit)")
     p.add_argument("--synthetic", action="store_true")
     return p.parse_args()
 
@@ -122,10 +124,13 @@ def main():
                   f"(fine for Stage 1 grammar; ensure no exact test REACTIONS leak in Stage 2)")
 
     # --- pre-tokenize molecules (Stage 1) to mmap: tokenize ONCE, not per epoch ---
-    from coffee_transformer.data.corpus import molecule_records
-    mol_meta = pretokenize_records(
-        molecule_records(molecules, tokenizer, args.max_length), out / "molecules"
-    )
+    from coffee_transformer.data.corpus import augmented_molecule_records, molecule_records
+    if args.augment > 1:
+        print(f"[molecules] augmenting x{args.augment} (canonical + randomized SMILES) ...")
+        mol_records = augmented_molecule_records(molecules, tokenizer, args.max_length, args.augment)
+    else:
+        mol_records = molecule_records(molecules, tokenizer, args.max_length)
+    mol_meta = pretokenize_records(mol_records, out / "molecules")
     print(f"[molecules] pretokenized -> {out}/molecules.* ({mol_meta})")
 
     # --- pre-tokenize reactions (Stage 2) to mmap ---

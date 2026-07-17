@@ -103,13 +103,27 @@ def _stage2_dataset(cfg: PretrainConfig, tokenizer):
     return PackedTokenDataset(cfg.stage2_reactions_path)
 
 
-def run_pretraining(cfg: PretrainConfig, device, generator=None):
+def run_pretraining(cfg: PretrainConfig, device, generator=None, resume_from: str | None = None):
     """Returns (mlm_model, tokenizer, best_val_loss). The returned model holds
-    the best-by-val encoder weights (canonical encoder.pt)."""
+    the best-by-val encoder weights (canonical encoder.pt).
+
+    `resume_from` (path to an encoder.pt/encoder_latest.pt) continues from a
+    saved ENCODER — used for the canonical->augmented hot swap. The MLM head is
+    re-initialized (it isn't saved) and re-warms in a few hundred steps; the
+    encoder, which is what matters, is preserved. Optimizer state is fresh, so
+    the LR schedule warms up again on the new data (that's fine, arguably good
+    when the data distribution changes)."""
+    import torch
+
     tokenizer = build_pretrain_tokenizer(cfg)
     cfg.model.vocab_size = tokenizer.vocab_size
     cfg.model.num_slot_types = tokenizer.schema.num_slot_types
     model = MLMModel(cfg.model)
+    if resume_from:
+        ckpt = torch.load(resume_from, map_location="cpu")
+        model.encoder.load_state_dict(ckpt["encoder_state"])
+        prev = ckpt.get("val_loss")
+        print(f"resumed encoder from {resume_from}" + (f" (prev val {prev:.4f})" if prev else ""))
 
     best = {"state": None, "val": float("inf")}
 

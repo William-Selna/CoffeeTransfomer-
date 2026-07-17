@@ -174,6 +174,39 @@ def molecule_records(
         yield ids, [0] * len(ids)
 
 
+def augmented_molecule_records(
+    smiles: Sequence[str],
+    tokenizer: SmilesTokenizer,
+    max_length: int,
+    n_aug: int,
+    seed: int = 0,
+    log_every: int = 1_000_000,
+) -> Iterator[tuple[list[int], list[int]]]:
+    """Yield `n_aug` tokenized spellings per molecule: the canonical form plus
+    (n_aug-1) RANDOMIZED SMILES (RDKit re-render from a random atom).
+
+    Done OFFLINE (at prepare time) so the pre-tokenized fast path is preserved —
+    every epoch then draws from a store of diverse spellings instead of
+    re-drilling the same canonical strings. Randomization only reorders atoms,
+    so no new vocab tokens appear. Without RDKit, randomize_smiles is a no-op and
+    this degrades to n_aug copies of the canonical form (install rdkit).
+    """
+    import random as _random
+
+    from .augment import randomize_smiles
+
+    rng = _random.Random(seed)
+    for i, smi in enumerate(smiles):
+        forms = [smi]
+        for _ in range(max(0, n_aug - 1)):
+            forms.append(randomize_smiles(smi, rng))
+        for f in forms:
+            ids = ([tokenizer.cls_id] + tokenizer.encode_smiles(f))[:max_length]
+            yield ids, [0] * len(ids)
+        if log_every and (i + 1) % log_every == 0:
+            print(f"  augmented {i + 1:,} molecules x{n_aug} ...", flush=True)
+
+
 def reaction_records(
     reactions: Sequence[Sequence[tuple[str, str]]],
     tokenizer: SmilesTokenizer,
