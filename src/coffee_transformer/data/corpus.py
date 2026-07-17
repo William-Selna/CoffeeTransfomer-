@@ -217,6 +217,23 @@ def reaction_records(
         yield ids[:max_length], slots[:max_length]
 
 
+def pretokenize_from_arrays(tokens, slots, lengths, out_prefix: str | Path) -> dict:
+    """Write a packed mmap store from already-flattened arrays (used by the
+    parallel augmentation path — workers return numpy arrays, main concatenates
+    and writes here). int16 tokens/slots keep it compact at 50M-record scale."""
+    out_prefix = Path(out_prefix)
+    out_prefix.parent.mkdir(parents=True, exist_ok=True)
+    lengths = np.asarray(lengths, dtype=np.int64)
+    offsets = np.zeros(lengths.size + 1, dtype=np.int64)
+    np.cumsum(lengths, out=offsets[1:])
+    np.save(f"{out_prefix}.tokens.npy", np.asarray(tokens, dtype=np.int16))
+    np.save(f"{out_prefix}.slots.npy", np.asarray(slots, dtype=np.int16))
+    np.save(f"{out_prefix}.offsets.npy", offsets)
+    meta = {"num_records": int(lengths.size), "num_tokens": int(np.asarray(tokens).size)}
+    Path(f"{out_prefix}.meta.json").write_text(json.dumps(meta))
+    return meta
+
+
 class PackedTokenDataset(Dataset):
     """Reads a pre-tokenized mmap store; returns dicts for the MLM collate."""
 
