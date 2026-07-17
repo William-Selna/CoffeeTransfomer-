@@ -54,8 +54,9 @@ def parse_args():
     p.add_argument("--num-workers", type=int, default=None, help="override dataloader workers")
     p.add_argument("--batch-size", type=int, default=None, help="override batch size")
     p.add_argument("--resume", default=None,
-                   help="continue from a saved encoder: a run dir (uses encoder.pt or "
-                        "encoder_latest.pt) or a direct .pt path — for the canonical->augmented hot swap")
+                   help="continue from a saved encoder: a run dir (picks the checkpoint whose "
+                        "vocab matches the tokenizer) or a direct .pt path — for the "
+                        "canonical->augmented hot swap. Vocab is validated; a mismatch errors clearly.")
     p.add_argument("--no-compile", action="store_true")
     return p.parse_args()
 
@@ -78,14 +79,10 @@ def main():
     if args.no_compile:
         cfg.compile = False
 
-    resume_from = None
-    if args.resume:
-        rp = pathlib.Path(args.resume)
-        if rp.is_dir():
-            cand = rp / "encoder.pt"
-            resume_from = str(cand if cand.exists() else rp / "encoder_latest.pt")
-        else:
-            resume_from = str(rp)
+    # dir-or-file; a dir is resolved to the vocab-matching checkpoint inside
+    # run_pretraining (which has the real tokenizer), so a stale synthetic
+    # encoder.pt can't be picked by accident.
+    resume_from = args.resume or None
 
     generator = set_seed(cfg.seed)
     device = get_device(cfg.device)

@@ -107,8 +107,12 @@ class PretrainConfig:
 
     # hardening: held-out MLM val + warmup/cosine LR + divergence/checkpoint
     val_frac: float = 0.02             # held-out slice of each stage's corpus
+    val_max: int = 200_000             # hard cap on held-out records: keeps eval
+                                       # cost from scaling with corpus size (the
+                                       # augmented store is ~5x bigger, so 2% was
+                                       # ~1M mols -> a multi-thousand-batch eval)
     warmup_frac: float = 0.05
-    eval_every: int = 500              # steps between held-out val evals
+    eval_every: int = 1000             # steps between held-out val evals
     ckpt_every: int = 1000             # steps between rolling encoder_latest.pt saves
 
     # optimization / perf

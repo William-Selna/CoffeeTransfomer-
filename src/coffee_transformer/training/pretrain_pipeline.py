@@ -51,16 +51,53 @@ def build_pretrain_tokenizer(cfg: PretrainConfig) -> SmilesTokenizer:
     )
 
 
-def _split(dataset, val_frac: float, seed: int):
-    """Deterministic shuffled train/val split (held-out MLM val — gap fix)."""
+def _split(dataset, val_frac: float, seed: int, val_max: int | None = None):
+    """Deterministic shuffled train/val split (held-out MLM val — gap fix).
+
+    `val_max` caps the held-out slice so eval cost stops scaling with corpus
+    size — on the 5x-larger augmented store, 2% would be ~1M molecules and each
+    eval a multi-thousand-batch pass. A fixed ~200k slice is more than enough for
+    a stable val estimate.
+    """
     n = len(dataset)
     idx = list(range(n))
     random.Random(seed).shuffle(idx)
     n_val = max(1, int(n * val_frac)) if n > 1 else 0
+    if val_max is not None and n_val > val_max:
+        n_val = val_max
     val_idx, train_idx = idx[:n_val], idx[n_val:]
     train = Subset(dataset, train_idx)
     val = Subset(dataset, val_idx) if n_val else None
     return train, val
+
+
+def _resolve_resume(resume_from: str, expected_vocab: int) -> str:
+    """Resolve a --resume argument to a concrete checkpoint file.
+
+    A direct .pt path is returned as-is (the caller vocab-checks it). A run DIR
+    is resolved to the first checkpoint whose encoder vocab matches the tokenizer,
+    trying the real trained snapshots first — this skips the classic wrong-file
+    trap where a stale 38-vocab synthetic smoke encoder.pt sat next to the real
+    622-vocab encoder and got picked blindly.
+    """
+    import torch
+
+    p = Path(resume_from)
+    if not p.is_dir():
+        return str(p)
+    tried = []
+    for name in ("encoder_phase1.pt", "encoder_latest.pt", "encoder.pt"):
+        c = p / name
+        if not c.exists():
+            continue
+        v = int(torch.load(c, map_location="cpu")["encoder_state"]["embedding.token.weight"].shape[0])
+        tried.append(f"{name}={v}")
+        if v == expected_vocab:
+            return str(c)
+    raise ValueError(
+        f"--resume {p}: no checkpoint matches tokenizer vocab {expected_vocab} "
+        f"(found {', '.join(tried) or 'none'}). Pass the real encoder_phase1.pt directly."
+    )
 
 
 def _loader(cfg: PretrainConfig, dataset, tokenizer, shuffle: bool):
@@ -120,10 +157,19 @@ def run_pretraining(cfg: PretrainConfig, device, generator=None, resume_from: st
     cfg.model.num_slot_types = tokenizer.schema.num_slot_types
     model = MLMModel(cfg.model)
     if resume_from:
-        ckpt = torch.load(resume_from, map_location="cpu")
+        resume_path = _resolve_resume(resume_from, tokenizer.vocab_size)
+        ckpt = torch.load(resume_path, map_location="cpu")
+        enc_vocab = int(ckpt["encoder_state"]["embedding.token.weight"].shape[0])
+        if enc_vocab != tokenizer.vocab_size:
+            raise ValueError(
+                f"resume vocab mismatch: {resume_path} encoder has vocab {enc_vocab}, "
+                f"but the tokenizer has {tokenizer.vocab_size}. This is almost always the "
+                f"wrong checkpoint (a synthetic smoke-test encoder is 38-vocab). Point "
+                f"--resume at the real encoder_phase1.pt / encoder_latest.pt."
+            )
         model.encoder.load_state_dict(ckpt["encoder_state"])
         prev = ckpt.get("val_loss")
-        print(f"resumed encoder from {resume_from}" + (f" (prev val {prev:.4f})" if prev else ""))
+        print(f"resumed encoder from {resume_path}" + (f" (prev val {prev:.4f})" if prev else ""))
 
     best = {"state": None, "val": float("inf")}
 
@@ -141,7 +187,7 @@ def run_pretraining(cfg: PretrainConfig, device, generator=None, resume_from: st
         return cb
 
     def run_stage(dataset, mask_mode, epochs, capture_best):
-        train_ds, val_ds = _split(dataset, cfg.val_frac, cfg.seed)
+        train_ds, val_ds = _split(dataset, cfg.val_frac, cfg.seed, cfg.val_max)
         train_loader = _loader(cfg, train_ds, tokenizer, shuffle=True)
         val_loader = _loader(cfg, val_ds, tokenizer, shuffle=False) if val_ds else None
         trainer = MLMTrainer(

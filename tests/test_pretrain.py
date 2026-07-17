@@ -3,6 +3,7 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
 
+import pytest
 import torch
 
 from coffee_transformer.data.corpus import (
@@ -32,7 +33,7 @@ from coffee_transformer.training.pretrain import (
     mlm_collate,
     span_mask_tokens,
 )
-from coffee_transformer.training.pretrain_pipeline import run_pretraining
+from coffee_transformer.training.pretrain_pipeline import _resolve_resume, run_pretraining
 from coffee_transformer.training.probe import linear_probe_score
 from coffee_transformer.utils.config import PretrainConfig, RunConfig
 from coffee_transformer.utils.seed import set_seed
@@ -49,6 +50,31 @@ def _small_model(cfg):
     cfg.model.prelude_layers = 1
     cfg.model.core_layers = 2
     return cfg
+
+
+def _fake_encoder_ckpt(path, vocab):
+    # minimal shape: only the token embedding is inspected by _resolve_resume
+    torch.save({"encoder_state": {"embedding.token.weight": torch.zeros(vocab, 8)}}, path)
+
+
+def test_resolve_resume_picks_vocab_match_over_stale_synthetic(tmp_path):
+    # the exact bug: a stale 38-vocab synthetic encoder.pt next to the real one
+    _fake_encoder_ckpt(tmp_path / "encoder.pt", 38)          # stale smoke-test
+    _fake_encoder_ckpt(tmp_path / "encoder_phase1.pt", 622)  # real trained
+    _fake_encoder_ckpt(tmp_path / "encoder_latest.pt", 622)
+    assert _resolve_resume(str(tmp_path), 622) == str(tmp_path / "encoder_phase1.pt")
+
+
+def test_resolve_resume_errors_when_no_vocab_matches(tmp_path):
+    _fake_encoder_ckpt(tmp_path / "encoder.pt", 38)
+    with pytest.raises(ValueError, match="no checkpoint matches tokenizer vocab 622"):
+        _resolve_resume(str(tmp_path), 622)
+
+
+def test_resolve_resume_passes_through_direct_file(tmp_path):
+    f = tmp_path / "encoder_phase1.pt"
+    _fake_encoder_ckpt(f, 622)
+    assert _resolve_resume(str(f), 622) == str(f)
 
 
 def test_clean_corpus_dedups():
