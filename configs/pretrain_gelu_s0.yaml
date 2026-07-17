@@ -25,6 +25,7 @@ model:
 # Real-run data (pass --synthetic for the offline smoke). Full corpus.
 synthetic: false
 pubchem_path: data/processed/pubchem.smi
+stage1_tokens_path: data/processed/molecules   # pre-tokenized Stage-1 (fast path)
 pubchem_limit: 10000000
 stage2_reactions_path: data/processed/reactions
 tokenizer_path: data/processed/tokenizer.json

@@ -18,10 +18,22 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import sys
 
+# Cap CPU threads per process BEFORE importing torch — with several pretrainings
+# sharing one box, each torch process otherwise grabs all cores for tiny CPU ops
+# and the machine thrashes (load average >> cores). TORCH_NUM_THREADS overrides.
+os.environ.setdefault("OMP_NUM_THREADS", os.environ.get("TORCH_NUM_THREADS", "8"))
+# reduce CUDA fragmentation across the co-scheduled runs
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "src"))
+
+import torch
+
+torch.set_num_threads(int(os.environ.get("TORCH_NUM_THREADS", "8")))
 
 from coffee_transformer.models.recurrent_depth import count_parameters
 from coffee_transformer.training.checkpoint import save_pretrained_encoder

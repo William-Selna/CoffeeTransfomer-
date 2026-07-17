@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import random
 from functools import partial
+from pathlib import Path
 
 from torch.utils.data import DataLoader, Subset
 
@@ -70,17 +71,23 @@ def _loader(cfg: PretrainConfig, dataset, tokenizer, shuffle: bool):
         num_workers=cfg.num_workers,
         collate_fn=partial(mlm_collate, pad_id=tokenizer.pad_id),
         drop_last=False,
+        pin_memory=True,
+        persistent_workers=cfg.num_workers > 0,
     )
 
 
 def _stage1_dataset(cfg: PretrainConfig, tokenizer):
     if cfg.synthetic:
         mols = synthetic_molecule_corpus(cfg.synthetic_mol_n, seed=cfg.seed)
-    else:
-        if not cfg.pubchem_path:
-            raise ValueError("stage1 needs pubchem_path (cleaned .smi) for a real run")
+        return MoleculeMLMDataset(mols, tokenizer, cfg.max_length)
+    # fast path: pre-tokenized mmap (tokenized once by prepare_corpus)
+    if cfg.stage1_tokens_path and Path(f"{cfg.stage1_tokens_path}.tokens.npy").exists():
+        return PackedTokenDataset(cfg.stage1_tokens_path)
+    # fallback: tokenize the cleaned .smi on the fly (slower, CPU-bound)
+    if cfg.pubchem_path:
         mols = read_smiles_lines(cfg.pubchem_path, limit=cfg.pubchem_limit)
-    return MoleculeMLMDataset(mols, tokenizer, cfg.max_length)
+        return MoleculeMLMDataset(mols, tokenizer, cfg.max_length)
+    raise ValueError("stage1 needs stage1_tokens_path (preferred) or pubchem_path for a real run")
 
 
 def _stage2_dataset(cfg: PretrainConfig, tokenizer):

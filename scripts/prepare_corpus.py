@@ -121,7 +121,14 @@ def main():
             print(f"[WARN] {len(leaked)} HTE molecules appear in the PubChem corpus "
                   f"(fine for Stage 1 grammar; ensure no exact test REACTIONS leak in Stage 2)")
 
-    # --- pre-tokenize reactions to mmap ---
+    # --- pre-tokenize molecules (Stage 1) to mmap: tokenize ONCE, not per epoch ---
+    from coffee_transformer.data.corpus import molecule_records
+    mol_meta = pretokenize_records(
+        molecule_records(molecules, tokenizer, args.max_length), out / "molecules"
+    )
+    print(f"[molecules] pretokenized -> {out}/molecules.* ({mol_meta})")
+
+    # --- pre-tokenize reactions (Stage 2) to mmap ---
     meta = pretokenize_records(
         reaction_records(reactions, tokenizer, args.max_length), out / "reactions"
     )

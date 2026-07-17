@@ -66,9 +66,10 @@ mps:
 > nvidia-cuda-mps-control -d || true
 
 pretrain:
-> for c in gelu_s0 gelu_s1 swiglu_s0 swiglu_s1; do \
->   $(PY) scripts/pretrain.py --config configs/pretrain_$$c.yaml & \
-> done; wait
+> OMP_NUM_THREADS=8 PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True bash -c '\
+>   for c in gelu_s0 gelu_s1 swiglu_s0 swiglu_s1; do \
+>     $(PY) scripts/pretrain.py --config configs/pretrain_$$c.yaml & \
+>   done; wait'
 > @echo "all four pretrainings finished"
 
 select:

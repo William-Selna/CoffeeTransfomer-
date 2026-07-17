@@ -91,7 +91,8 @@ class PretrainConfig:
     synthetic: bool = True
     synthetic_mol_n: int = 800
     synthetic_rxn_n: int = 800
-    pubchem_path: str | None = None          # .smi/.txt, one SMILES per line
+    pubchem_path: str | None = None          # .smi/.txt, one SMILES per line (fallback)
+    stage1_tokens_path: str | None = None     # pre-tokenized molecule prefix (fast path)
     pubchem_limit: int | None = None         # 5_000_000 or 10_000_000
     stage2_reactions_path: str | None = None  # pre-tokenized prefix (see prepare_corpus)
     tokenizer_path: str | None = None         # shared vocab built by prepare_corpus

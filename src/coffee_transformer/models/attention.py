@@ -77,15 +77,14 @@ class MultiHeadSelfAttention(nn.Module):
         k = self._split(self._proj(self.k, x, slot_type_ids))
         v = self._split(self._proj(self.v, x, slot_type_ids))
 
-        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.d_head)
+        # Flash / memory-efficient attention: never materializes the [B,H,T,T]
+        # score matrix, so memory is O(T) not O(T^2) — this is what keeps the
+        # recurrent unroll (r iterations) from OOMing at seq length 256.
+        attn_mask = None
         if key_padding_mask is not None:
-            # set masked (pad) key logits to -inf before softmax (Section 4)
-            bias = torch.zeros_like(key_padding_mask, dtype=scores.dtype)
-            bias = bias.masked_fill(~key_padding_mask, float("-inf"))
-            scores = scores + bias[:, None, None, :]
-
-        attn = F.softmax(scores, dim=-1)
-        attn = self.dropout(attn)
-        ctx = torch.matmul(attn, v)                       # [B,H,T,dh]
+            # True = attend; broadcast [B,T] key mask over heads and query positions
+            attn_mask = key_padding_mask[:, None, None, :]
+        dropout_p = self.dropout.p if self.training else 0.0
+        ctx = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=dropout_p)
         ctx = ctx.transpose(1, 2).contiguous().view(x.size(0), x.size(1), -1)
         return self.out(ctx)

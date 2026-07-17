@@ -62,28 +62,30 @@ def mask_tokens(
     mlm_prob: float,
     generator: torch.Generator | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """BERT 80/10/10 masking. Returns (masked_input_ids, labels) with labels
-    set to -100 on unmasked positions."""
+    """BERT 80/10/10 masking, fully vectorized and device-agnostic (runs on the
+    GPU when input_ids is on the GPU, so it never bottlenecks the CPU). Returns
+    (masked_input_ids, labels) with labels set to -100 on unmasked positions.
+    `generator` is accepted for API compatibility but unused (global RNG)."""
+    device = input_ids.device
     labels = input_ids.clone()
     special_ids = {tokenizer.token_to_id[t] for t in CORE_SPECIALS}
     special_ids |= {tokenizer.slot_token_id(s) for s in tokenizer.schema.slots}
 
-    special_mask = torch.zeros_like(input_ids, dtype=torch.bool)
-    for sid in special_ids:
-        special_mask |= input_ids == sid
+    special = torch.tensor(sorted(special_ids), device=device)
+    special_mask = torch.isin(input_ids, special)
 
-    prob = torch.full(input_ids.shape, mlm_prob)
+    prob = torch.full(input_ids.shape, mlm_prob, device=device)
     prob.masked_fill_(special_mask, 0.0)
-    masked = torch.bernoulli(prob, generator=generator).bool()
+    masked = torch.bernoulli(prob).bool()
     labels[~masked] = -100
 
-    # 80% -> [MASK]
-    replace = torch.bernoulli(torch.full(input_ids.shape, 0.8), generator=generator).bool() & masked
     input_ids = input_ids.clone()
+    # 80% -> [MASK]
+    replace = (torch.rand(input_ids.shape, device=device) < 0.8) & masked
     input_ids[replace] = tokenizer.mask_id
     # 10% -> random token
-    rand = torch.bernoulli(torch.full(input_ids.shape, 0.5), generator=generator).bool() & masked & ~replace
-    random_tokens = torch.randint(tokenizer.vocab_size, input_ids.shape, generator=generator)
+    rand = (torch.rand(input_ids.shape, device=device) < 0.5) & masked & ~replace
+    random_tokens = torch.randint(tokenizer.vocab_size, input_ids.shape, device=device)
     input_ids[rand] = random_tokens[rand]
     # remaining 10% keep original
     return input_ids, labels
@@ -110,23 +112,27 @@ def span_mask_tokens(
     generator: torch.Generator | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Stage-2 span masking: mask ENTIRE slot spans ("infer the plausible ligand
-    from reaction context"). For each sequence, each slot span (slot id > 0) is
-    masked with probability `mask_frac`; the opening slot token stays visible so
-    the model still knows which role to fill. Returns (masked_input, labels)."""
-    labels = torch.full_like(input_ids, -100)
-    masked_input = input_ids.clone()
-    slot_token_ids = {tokenizer.slot_token_id(s) for s in tokenizer.schema.slots}
+    from reaction context"). For each sequence, each slot type (id > 0) is masked
+    with probability `mask_frac`; the opening slot token stays visible so the
+    model still knows which role to fill. Fully vectorized / device-agnostic.
+    `generator` is accepted for API compatibility but unused (global RNG)."""
+    device = input_ids.device
+    n_slots = tokenizer.schema.num_slot_types
+    slot_tok = torch.tensor(
+        [tokenizer.slot_token_id(s) for s in tokenizer.schema.slots], device=device
+    )
+    is_slot_token = torch.isin(input_ids, slot_tok)
+    is_body = (slot_type_ids > 0) & ~is_slot_token          # maskable span content
 
-    for b in range(input_ids.size(0)):
-        present = [int(s) for s in slot_type_ids[b].unique() if int(s) > 0]
-        for slot_id in present:
-            if torch.rand(1, generator=generator).item() > mask_frac:
-                continue
-            span = (slot_type_ids[b] == slot_id) & torch.tensor(
-                [int(t) not in slot_token_ids for t in input_ids[b]], device=input_ids.device
-            )
-            labels[b][span] = input_ids[b][span]
-            masked_input[b][span] = tokenizer.mask_id
+    # per (row, slot-type) coin flip, broadcast to positions via gather
+    decide = torch.rand(input_ids.size(0), n_slots, device=device) < mask_frac
+    pos_decide = decide.gather(1, slot_type_ids)             # [B, T]
+    do_mask = is_body & pos_decide
+
+    labels = torch.where(do_mask, input_ids, torch.full_like(input_ids, -100))
+    masked_input = torch.where(
+        do_mask, torch.full_like(input_ids, tokenizer.mask_id), input_ids
+    )
     return masked_input, labels
 
 
@@ -182,19 +188,15 @@ class MLMTrainer:
         if compile and hasattr(torch, "compile"):
             self.model = torch.compile(self.model)
 
-    def _make_labels(self, batch):
-        if self.mask_mode == "span":
-            return span_mask_tokens(
-                batch["input_ids"], batch["slot_type_ids"], self.tok, generator=self.generator
-            )
-        return mask_tokens(batch["input_ids"], self.tok, self.mlm_prob, self.generator)
-
     def _loss(self, batch):
-        masked, labels = self._make_labels(batch)
-        masked = masked.to(self.device)
-        labels = labels.to(self.device)
-        slot_type_ids = batch["slot_type_ids"].to(self.device)
-        attention_mask = batch["attention_mask"].to(self.device)
+        # move to device FIRST, then mask on-device — keeps masking off the CPU
+        input_ids = batch["input_ids"].to(self.device, non_blocking=True)
+        slot_type_ids = batch["slot_type_ids"].to(self.device, non_blocking=True)
+        attention_mask = batch["attention_mask"].to(self.device, non_blocking=True)
+        if self.mask_mode == "span":
+            masked, labels = span_mask_tokens(input_ids, slot_type_ids, self.tok)
+        else:
+            masked, labels = mask_tokens(input_ids, self.tok, self.mlm_prob)
         with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.amp):
             logits = self.model(masked, slot_type_ids, attention_mask=attention_mask)
             return F.cross_entropy(
