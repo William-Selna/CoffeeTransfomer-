@@ -44,6 +44,9 @@ def parse_args():
     p.add_argument("--epochs", type=int, default=None, help="override train.epochs")
     p.add_argument("--seed", type=int, default=None, help="override train.seed")
     p.add_argument("--no-grpo", action="store_true", help="skip Stage 4 even if enabled")
+    p.add_argument("--synthetic", action="store_true",
+                   help="force the offline toy data (keeps the CPU smoke path working "
+                        "now that configs point at the real BH sheet)")
     p.add_argument("--pretrained", default=None,
                    help="pretrained encoder dir (encoder.pt + tokenizer.json); "
                         "overrides pretrained_encoder in the config")
@@ -65,6 +68,8 @@ def main():
     if args.batch_size is not None:
         cfg.train.batch_size = args.batch_size
         cfg.grpo.batch_size = min(cfg.grpo.batch_size, args.batch_size)
+    if args.synthetic:
+        cfg.data.synthetic = True
 
     generator = set_seed(cfg.train.seed)
     device = get_device(cfg.train.device)

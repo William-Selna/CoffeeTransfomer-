@@ -72,6 +72,8 @@ def parse_args():
     p.add_argument("--probe-seeds", type=int, nargs="+", default=[0, 1],
                    help="average the probe R2 over these seeds (fresh head each) for a stable pick")
     p.add_argument("--eval-r", type=int, default=4)
+    p.add_argument("--synthetic", action="store_true",
+                   help="force offline toy data for the probe AND the forks (CPU smoke)")
     return p.parse_args()
 
 
@@ -101,6 +103,8 @@ def main():
         data_cfg.train.device = args.device
     if args.batch_size:
         data_cfg.train.batch_size = args.batch_size
+    if args.synthetic:
+        data_cfg.data.synthetic = True
     device = get_device(data_cfg.train.device)
 
     print(f"== probing candidate encoders (HTE linear-probe R2, seeds {args.probe_seeds}) ==")
@@ -134,6 +138,8 @@ def main():
                 cmd += ["--epochs", str(args.epochs)]
             if args.batch_size is not None:
                 cmd += ["--batch-size", str(args.batch_size)]
+            if args.synthetic:
+                cmd += ["--synthetic"]
             print(f"\n########## {fork} (seed {seed}) on {best} ##########")
             subprocess.run(cmd, check=True)
 

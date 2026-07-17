@@ -3,7 +3,8 @@
 name: sft90_rl10
 
 data:
-  synthetic: true          # set false + bh_xlsx: <path> for the real BH data
+  synthetic: false        # real Buchwald-Hartwig (pass --synthetic to force toy data)
+  bh_xlsx: data/hte/Buchwald-Hartwig/Dreher_and_Doyle_input_data.xlsx
   sft_fraction: 0.90
   rl_fraction: 0.10
   test_fraction: 0.20

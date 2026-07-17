@@ -205,6 +205,15 @@ def run_pretraining(cfg: PretrainConfig, device, generator=None, resume_from: st
     if cfg.stage1_enabled:
         model = run_stage(_stage1_dataset(cfg, tokenizer), "uniform", cfg.stage1_epochs,
                           capture_best=not cfg.stage2_enabled)
+        if cfg.stage2_enabled:
+            # Snapshot the end-of-Stage-1 encoder BEFORE Stage 2 (reactivity)
+            # continues on the same weights. encoder_latest.pt rolls forward into
+            # Stage 2, so without this the grammar/spelling-invariance encoder would
+            # be overwritten and lost — keep it as a distinct artifact for ablations
+            # and as a fallback if Stage 2 ever regresses.
+            save_pretrained_encoder(cfg.out_dir, cfg.model, model, tokenizer, None,
+                                    filename="encoder_stage1.pt")
+            print(f"saved end-of-stage1 encoder -> {cfg.out_dir}/encoder_stage1.pt")
 
     if cfg.stage2_enabled:
         mode = "span" if cfg.span_mask_stage2 else "uniform"
