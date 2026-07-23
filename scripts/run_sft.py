@@ -11,6 +11,7 @@ debug locally first). Point `data.bh_xlsx` at the real sheet for a real run.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import pathlib
 import sys
@@ -120,6 +121,11 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), out_dir / "model.pt")
     tokenizer.save(out_dir / "tokenizer.json")
+    # model.cfg is the ModelConfig actually used to build this model (filled-in
+    # vocab_size/num_slot_types, and any override_num_bins from a pretrained-
+    # encoder transfer) — saving it lets scripts/export_to_hub.py rebuild the
+    # architecture without re-deriving it from the run config + tokenizer.
+    (out_dir / "config.json").write_text(json.dumps(dataclasses.asdict(model.cfg), indent=2))
     metrics = {
         "name": cfg.name,
         "params_millions": count_parameters(model) / 1e6,

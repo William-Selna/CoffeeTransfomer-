@@ -26,6 +26,9 @@ wandb/
 *.pt
 *.pth
 
+# Hugging Face export staging (scripts/export_to_hub.py)
+hf_export/
+
 # Notebooks / editors
 .ipynb_checkpoints/
 .vscode/

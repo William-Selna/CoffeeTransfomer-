@@ -216,6 +216,43 @@ python scripts/run_sft.py --config configs/run_uspto_crude.yaml   # synthetic of
 # pretrained_encoder: runs/pretrain_swiglu_s0  (head auto-resizes to 4 bins)
 ```
 
+## Pushing checkpoints to Hugging Face
+
+`scripts/export_to_hub.py` finds every checkpoint under `runs/` — SFT/GRPO runs
+(`runs/<name>/model.pt`) and pretrained encoders (`runs/pretrain_*/encoder.pt`)
+— and packages each as a plain **weights dump**: `model.safetensors` +
+`config.json` (the `ModelConfig`) + `tokenizer.json` + `metrics.json` + a
+generated `README.md` model card. This is *not* a `transformers.AutoModel`
+integration — loading a pushed checkpoint back means using this repo's own
+model classes (each checkpoint's README shows the exact snippet).
+
+First time doing this? Run it on whichever box has the `runs/` you want to
+publish (e.g. your Vast.ai instance):
+
+```bash
+pip install -e ".[hub]"          # huggingface_hub + safetensors
+
+# 1. dry run — builds hf_export/ locally, no network, no token needed.
+#    Open hf_export/<name>/ and look at what would be uploaded.
+python scripts/export_to_hub.py
+
+# 2. get a token from https://huggingface.co/settings/tokens (Write access),
+#    then either `huggingface-cli login` or:
+export HF_TOKEN=hf_...
+
+# 3. push everything in hf_export/ into one Hub repo (subfolder per checkpoint)
+python scripts/export_to_hub.py --push --repo-id YOUR_USERNAME/coffee-transformer
+# or via make:
+make push-to-hub REPO=YOUR_USERNAME/coffee-transformer
+```
+
+Useful flags: `--only sft75_rl25 pretrain_swiglu_s0` to push a subset,
+`--one-repo-per-checkpoint` for a separate Hub repo per checkpoint instead of
+one repo with subfolders, `--private` for a private repo. Old `model.pt`
+files saved before this script existed won't have a `config.json` next to
+them — `export_to_hub.py` falls back to matching a `configs/*.yaml` by its
+`train.out_dir`, or takes an explicit override: `--config sft75_rl25=configs/run_sft75_rl25.yaml`.
+
 ## Layout
 
 ```

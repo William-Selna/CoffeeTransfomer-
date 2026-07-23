@@ -1,7 +1,7 @@
 # CoffeeTransformer pipeline orchestration.
 # `make help` for targets. Paths are overridable: `make prepare PUBCHEM=... USPTO=...`.
 .RECIPEPREFIX = >
-.PHONY: help setup preflight smoke test fetch reactions prepare pretrain mps select uspto all clean tarball
+.PHONY: help setup preflight smoke test fetch reactions prepare pretrain mps select uspto all clean tarball push-to-hub
 
 PY ?= python
 PUBCHEM ?= data/raw/pubchem.smi
@@ -27,6 +27,7 @@ help:
 > @echo "  make uspto       optional crude USPTO SFT (coarse 4-bin)"
 > @echo "  make all         reactions -> prepare -> pretrain -> select"
 > @echo "  make tarball     bundle the repo (+ data) into a release tarball"
+> @echo "  make push-to-hub push runs/ checkpoints to Hugging Face (needs HF_TOKEN + REPO=user/name)"
 
 setup:
 > $(PY) -m pip install -e ".[chem,dev]"
@@ -82,6 +83,10 @@ all: reactions prepare pretrain select
 
 tarball:
 > bash scripts/make_tarball.sh
+
+push-to-hub:
+> @test -n "$(REPO)" || { echo "usage: make push-to-hub REPO=your-username/coffee-transformer"; exit 1; }
+> $(PY) scripts/export_to_hub.py --push --repo-id $(REPO)
 
 clean:
 > rm -rf runs/ data/processed/
